@@ -1,0 +1,8 @@
+# Secrets and local state must never be committed
+/secrets/
+*.secret
+.env
+bin/
+dist/
+config.yaml
+!examples/config.yaml

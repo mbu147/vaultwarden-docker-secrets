@@ -1,0 +1,67 @@
+# Docker Compose example: secret-sync writes secrets into a shared tmpfs volume
+# that consumer containers mount read-only. Nothing is stored on disk.
+services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1       # list containers
+      POST: 1             # allow write calls
+      ALLOW_RESTARTS: 1   # restart and kill (signal action)
+      # The swarm backend additionally needs SECRETS: 1, SERVICES: 1, SWARM: 1.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [sync]
+
+  secret-sync:
+    image: ghcr.io/mbu147/vaultwarden-docker-secrets:latest
+    restart: unless-stopped
+    depends_on: [docker-proxy]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=0700
+    volumes:
+      - ./config/config.yaml:/etc/secret-sync/config.yaml:ro
+      - secrets:/secrets
+    secrets: [bw_client_id, bw_client_secret, bw_password, sync_webhook_token]
+    healthcheck:
+      test: ["CMD", "secret-sync", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks: [sync]
+
+  app:
+    image: your/app:latest
+    # Wait until the first sync has written all secrets.
+    depends_on:
+      secret-sync:
+        condition: service_healthy
+    volumes:
+      - secrets:/run/secrets:ro
+    environment:
+      DB_PASSWORD_FILE: /run/secrets/db_password
+
+volumes:
+  secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: uid=1000,gid=1000,mode=0755
+
+networks:
+  sync: {}
+
+# Credentials for the Bitwarden API key login. Create the files outside of git.
+secrets:
+  bw_client_id:
+    file: ./bootstrap/bw_client_id
+  bw_client_secret:
+    file: ./bootstrap/bw_client_secret
+  bw_password:
+    file: ./bootstrap/bw_password
+  sync_webhook_token:
+    file: ./bootstrap/sync_webhook_token

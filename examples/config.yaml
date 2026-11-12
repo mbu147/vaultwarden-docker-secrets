@@ -1,0 +1,66 @@
+# Example secret-sync configuration.
+# Copy to ./config/config.yaml and adapt. See README.md for all options.
+
+bitwarden:
+  # URL of your Vaultwarden instance
+  server: https://vault.example.com
+  # Credentials are read from files (mount them as Docker secrets).
+  # If a *_file option is omitted, BW_CLIENTID / BW_CLIENTSECRET / BW_PASSWORD
+  # are used instead.
+  client_id_file: /run/secrets/bw_client_id
+  client_secret_file: /run/secrets/bw_client_secret
+  password_file: /run/secrets/bw_password
+
+# How often to poll Vaultwarden (minimum 10s).
+interval: 5m
+
+# Default rotation behavior. Can be overridden per secret.
+# true:  update secrets when the vault value changes and run on_change actions
+# false: write once and never overwrite (changes are only logged)
+rotate: true
+
+# Directory for the "file" backend.
+secret_dir: /secrets
+
+# Optional: trigger an immediate sync with
+#   curl -X POST -H "Authorization: Bearer <token>" http://secret-sync:8080/sync
+webhook:
+  listen: ":8080"
+  token_file: /run/secrets/sync_webhook_token
+
+# Only needed for on_change actions or the swarm backend.
+# Prefer a socket proxy over mounting the Docker socket directly.
+docker:
+  host: tcp://docker-proxy:2375
+
+secrets:
+  # Written to /secrets/db_password, app is restarted when the value changes.
+  - name: db_password
+    source:
+      item: postgres          # item name or ID
+      folder: homelab         # optional filter
+      field: password         # password (default) | username | notes | uri | custom:<name>
+    backend: file             # file (default) | swarm
+    mode: "0444"              # file mode; use 0444 if consumers run as another user
+    on_change:
+      action: restart         # none (default) | restart | signal
+      containers: [app]       # names/IDs; labeled containers are added automatically
+
+  # Reloaded via signal instead of a restart.
+  - name: api_token
+    source:
+      item: my-api
+      collection: prod
+      field: custom:token
+    mode: "0444"
+    on_change:
+      action: signal
+      signal: SIGHUP
+      containers: [app]
+
+  # Written once, never overwritten afterwards.
+  - name: jwt_seed
+    source:
+      item: jwt
+      field: notes
+    rotate: false

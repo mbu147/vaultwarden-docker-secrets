@@ -1,0 +1,37 @@
+# Docker Swarm example (deploy on a manager node). Uses the "swarm" backend:
+# secret-sync creates versioned secrets "<name>_v<hash8>" and updates every
+# service that references an older version.
+#
+# Bootstrap: let secret-sync create the first version, then attach it to your
+# services with the target name you want inside the container, e.g.
+#   docker service update --secret-add source=db_password_v1a2b3c4d,target=db_password app
+# From then on, secret-sync keeps the reference up to date. Note that
+# "docker stack deploy" would reset a service to the version in the stack file.
+services:
+  secret-sync:
+    image: ghcr.io/mbu147/vaultwarden-docker-secrets:latest
+    user: "0"   # the Docker socket on a manager is usually root-only
+    configs:
+      - source: secret_sync_config
+        target: /etc/secret-sync/config.yaml
+    secrets: [bw_client_id, bw_client_secret, bw_password]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "secret-sync", "-healthcheck"]
+      interval: 10s
+    deploy:
+      placement:
+        constraints: [node.role == manager]
+
+configs:
+  secret_sync_config:
+    file: ./config/config.yaml
+
+secrets:
+  bw_client_id:
+    external: true
+  bw_client_secret:
+    external: true
+  bw_password:
+    external: true
