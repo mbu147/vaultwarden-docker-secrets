@@ -68,6 +68,27 @@ files with Compose's top-level `secrets: <name>: file: ./secrets/<name>`. The
 file must exist before the consumer starts, so keep the `depends_on` health
 condition.
 
+## Sharing the volume across Compose projects
+
+The example sets `name: secrets` on the volume. Without it, Compose names the
+volume `<project>_secrets` and other projects cannot reach it. With the fixed
+name, `secret-sync` creates the volume, and consumers in any other Compose
+project attach to it:
+
+```yaml
+services:
+  app:
+    volumes:
+      - secrets:/run/secrets:ro
+
+volumes:
+  secrets:
+    external: true
+```
+
+Start `secret-sync` first (there is no `depends_on` across projects). Consumers
+that start before the files exist should use `restart: unless-stopped`.
+
 ## Docker socket access
 
 The socket proxy runs unprivileged, so it must be a member of the group that

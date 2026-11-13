@@ -79,11 +79,21 @@ services:
 
 volumes:
   secrets:
+    # Fixed name: without it Compose names the volume <project>_secrets. With it,
+    # consumers in other compose projects can mount it as an external volume.
+    name: secrets
     driver: local
     driver_opts:
       type: tmpfs
       device: tmpfs
       o: uid=1000,gid=1000,mode=0755
+
+# Consumers in OTHER compose projects declare the same volume as external:
+# volumes:
+#   secrets:
+#     external: true
+# and mount it read-only: "- secrets:/run/secrets:ro". The volume is created by
+# this file (start secret-sync first); no manual "docker volume create" needed.
 
 networks:
   sync: {}
