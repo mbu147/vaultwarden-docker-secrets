@@ -55,7 +55,10 @@ Vaultwarden --(bw CLI: sync + list items)--> secret-sync --> file backend  (Comp
    these files with their host permissions and ignores `uid`/`gid`/`mode`, while
    the container runs as UID 1000 (`node`). Make them readable for that user:
    `sudo chown 1000:1000 bootstrap/* && chmod 400 bootstrap/*` (or `chmod 444`).
-3. Copy [examples/config.yaml](examples/config.yaml) to `config/config.yaml` and
+3. Configure `secret-sync` with environment variables (see below), as in
+   [examples/compose.yaml](examples/compose.yaml). For secrets that must exist
+   at container startup or need the Swarm backend, also copy
+   [examples/config.yaml](examples/config.yaml) to `config/config.yaml` and
    adapt it.
 4. Start with [examples/compose.yaml](examples/compose.yaml). Consumers mount the
    shared `secrets` volume read-only and wait for `service_healthy`.
@@ -69,9 +72,10 @@ condition.
 
 The socket proxy runs unprivileged, so it must be a member of the group that
 owns `/var/run/docker.sock` on the host. That group ID differs between systems
-(for example `999` or `992`) and cannot be detected from inside Compose. Write it
-to a `.env` file next to `compose.yaml`; the example reads it as `DOCKER_GID`
-and refuses to start if it is missing:
+(for example `999` or `992`) and cannot be detected from inside Compose. The
+example uses `992` by default via `${DOCKER_GID:-992}`. If your host differs,
+set `DOCKER_GID` in the environment or in an optional `.env` file next to
+`compose.yaml`:
 
 ```sh
 echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" > .env
@@ -94,6 +98,24 @@ vault changes are ignored.
 ## Configuration
 
 See [examples/config.yaml](examples/config.yaml) for a fully commented file.
+The config file is **optional**: every general setting can be set with an
+environment variable, and environment variables override the file. Only the
+`secrets:` list needs the file (or container labels).
+
+| Environment variable | Config key |
+|---|---|
+| `BW_SERVER` | `bitwarden.server` |
+| `BW_CLIENTID_FILE`, `BW_CLIENTSECRET_FILE`, `BW_PASSWORD_FILE` | `bitwarden.*_file` |
+| `BW_CLIENTID`, `BW_CLIENTSECRET`, `BW_PASSWORD` | credential values (used when no file is set) |
+| `SECRET_SYNC_INTERVAL` | `interval` |
+| `SECRET_SYNC_ROTATE` | `rotate` |
+| `SECRET_SYNC_SECRET_DIR` | `secret_dir` |
+| `SECRET_SYNC_READY_FILE` | `ready_file` |
+| `SECRET_SYNC_WEBHOOK_LISTEN`, `SECRET_SYNC_WEBHOOK_TOKEN_FILE` | `webhook.*` |
+| `SECRET_SYNC_DISCOVERY_LABELS` | `discovery.labels` |
+| `SECRET_SYNC_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error`. Not a config key |
+| `SECRET_SYNC_LOG_FORMAT` | `text` (default) or `json`. Not a config key |
+| `DOCKER_HOST` | `docker.host` |
 
 | Key | Default | Description |
 |---|---|---|
@@ -104,7 +126,7 @@ See [examples/config.yaml](examples/config.yaml) for a fully commented file.
 | `secret_dir` | `/secrets` | Target directory of the `file` backend |
 | `ready_file` | `/tmp/secret-sync.ready` | Created after the first fully successful sync; used by `-healthcheck` |
 | `webhook.listen` / `webhook.token_file` | off | Enables `POST /sync` and `GET /healthz` |
-| `docker.host` | default socket | `unix:///path` or `tcp://host:port` |
+| `docker.host` | `$DOCKER_HOST`, else default socket | `unix:///path` or `tcp://host:port` |
 | `discovery.labels` | `false` | Read secret definitions from container labels |
 | `secrets[].name` | – | Secret name (`[A-Za-z0-9._-]`) |
 | `secrets[].source.item` | – | Item name or ID (must match exactly one item) |

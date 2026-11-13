@@ -27,6 +27,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
+	setupLogging()
 	if *showVersion {
 		fmt.Println(version)
 		return
@@ -35,6 +36,22 @@ func main() {
 		slog.Error("fatal", "error", err)
 		os.Exit(1)
 	}
+}
+
+// setupLogging writes all logs to stdout (container log viewers mark stderr as
+// errors) and honors SECRET_SYNC_LOG_LEVEL (debug|info|warn|error) and
+// SECRET_SYNC_LOG_FORMAT (text|json).
+func setupLogging() {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(os.Getenv("SECRET_SYNC_LOG_LEVEL"))); err != nil {
+		level = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var h slog.Handler = slog.NewTextHandler(os.Stdout, opts)
+	if os.Getenv("SECRET_SYNC_LOG_FORMAT") == "json" {
+		h = slog.NewJSONHandler(os.Stdout, opts)
+	}
+	slog.SetDefault(slog.New(h))
 }
 
 func run(cfgPath string, once, health bool) error {

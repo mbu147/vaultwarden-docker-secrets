@@ -2,7 +2,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -111,27 +113,86 @@ func (c *Config) RotateEnabled(s Secret) bool {
 	return true
 }
 
-// Load reads, defaults and validates the configuration file.
+// Load reads the optional configuration file, applies environment variable
+// overrides and defaults, and validates the result. A missing file is not an
+// error: the configuration may consist of environment variables only.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	return Parse(raw)
 }
 
-// Parse parses and validates configuration bytes.
+// Parse parses configuration bytes (may be empty), applies environment
+// variable overrides and defaults, and validates the result.
 func Parse(raw []byte) (*Config, error) {
 	var c Config
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
-	if err := dec.Decode(&c); err != nil {
+	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if err := c.applyEnv(os.Getenv); err != nil {
+		return nil, err
 	}
 	if err := c.applyDefaults(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// applyEnv lets environment variables override values from the file.
+func (c *Config) applyEnv(get func(string) string) error {
+	str := func(dst *string, key string) {
+		if v := get(key); v != "" {
+			*dst = v
+		}
+	}
+	boolean := func(key string) (*bool, error) {
+		v := get(key)
+		if v == "" {
+			return nil, nil
+		}
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid boolean %q", key, v)
+		}
+		return &b, nil
+	}
+
+	str(&c.Bitwarden.Server, "BW_SERVER")
+	str(&c.Bitwarden.ClientIDFile, "BW_CLIENTID_FILE")
+	str(&c.Bitwarden.ClientSecretFile, "BW_CLIENTSECRET_FILE")
+	str(&c.Bitwarden.PasswordFile, "BW_PASSWORD_FILE")
+	str(&c.SecretDir, "SECRET_SYNC_SECRET_DIR")
+	str(&c.ReadyFile, "SECRET_SYNC_READY_FILE")
+	str(&c.Webhook.Listen, "SECRET_SYNC_WEBHOOK_LISTEN")
+	str(&c.Webhook.TokenFile, "SECRET_SYNC_WEBHOOK_TOKEN_FILE")
+	str(&c.Docker.Host, "DOCKER_HOST")
+
+	if v := get("SECRET_SYNC_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("SECRET_SYNC_INTERVAL: %w", err)
+		}
+		c.Interval = d
+	}
+	b, err := boolean("SECRET_SYNC_ROTATE")
+	if err != nil {
+		return err
+	}
+	if b != nil {
+		c.Rotate = b
+	}
+	b, err = boolean("SECRET_SYNC_DISCOVERY_LABELS")
+	if err != nil {
+		return err
+	}
+	if b != nil {
+		c.Discovery.Labels = *b
+	}
+	return nil
 }
 
 func (c *Config) applyDefaults() error {

@@ -1,6 +1,42 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestEnvOverridesAndEmptyFile(t *testing.T) {
+	t.Setenv("SECRET_SYNC_DISCOVERY_LABELS", "true")
+	t.Setenv("SECRET_SYNC_INTERVAL", "30s")
+	t.Setenv("SECRET_SYNC_ROTATE", "false")
+	t.Setenv("DOCKER_HOST", "tcp://docker-proxy:2375")
+	t.Setenv("BW_SERVER", "https://vault.example.com")
+
+	c, err := Parse(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Discovery.Labels || c.Interval != 30*time.Second || c.RotateEnabled(Secret{}) ||
+		c.Docker.Host != "tcp://docker-proxy:2375" || c.Bitwarden.Server != "https://vault.example.com" {
+		t.Fatalf("env not applied: %+v", c)
+	}
+
+	// Env wins over the file.
+	c, err = Parse([]byte("interval: 1h\ndiscovery:\n  labels: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Interval != 30*time.Second || !c.Discovery.Labels {
+		t.Fatalf("env should override file: %+v", c)
+	}
+}
+
+func TestInvalidEnv(t *testing.T) {
+	t.Setenv("SECRET_SYNC_ROTATE", "maybe")
+	if _, err := Parse(nil); err == nil {
+		t.Fatal("expected error")
+	}
+}
 
 func TestParseDefaults(t *testing.T) {
 	c, err := Parse([]byte("secrets:\n  - name: db\n    source: {item: postgres}\n"))

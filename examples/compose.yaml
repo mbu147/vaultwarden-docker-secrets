@@ -9,8 +9,9 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     # The proxy runs unprivileged and needs the group that owns the Docker
-    # socket. Set DOCKER_GID in .env, see README ("Docker socket access").
-    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env, see README}"]
+    # socket. Defaults to 992; override with DOCKER_GID (shell or optional .env),
+    # see README ("Docker socket access").
+    group_add: ["${DOCKER_GID:-992}"]
     command:
       - "-listenip=0.0.0.0"
       - "-allowfrom=secret-sync"   # container name of secret-sync, nothing else may connect
@@ -35,9 +36,20 @@ services:
     tmpfs:
       - /tmp:uid=1000,gid=1000,mode=0700
     volumes:
-      - ./config/config.yaml:/etc/secret-sync/config.yaml:ro
+      - ./config/config.yaml:/etc/secret-sync/config.yaml:ro   # optional
       - secrets:/secrets
     secrets: [bw_client_id, bw_client_secret, bw_password, sync_webhook_token]
+    environment:
+      BW_SERVER: https://vault.example.com
+      BW_CLIENTID_FILE: /run/secrets/bw_client_id
+      BW_CLIENTSECRET_FILE: /run/secrets/bw_client_secret
+      BW_PASSWORD_FILE: /run/secrets/bw_password
+      DOCKER_HOST: tcp://docker-proxy:2375
+      SECRET_SYNC_DISCOVERY_LABELS: "true"   # define secrets with container labels
+      # SECRET_SYNC_INTERVAL: 5m
+      # SECRET_SYNC_ROTATE: "true"
+      SECRET_SYNC_WEBHOOK_LISTEN: ":8080"
+      SECRET_SYNC_WEBHOOK_TOKEN_FILE: /run/secrets/sync_webhook_token
     healthcheck:
       test: ["CMD", "secret-sync", "-healthcheck"]
       interval: 10s
