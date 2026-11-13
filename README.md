@@ -51,7 +51,10 @@ Vaultwarden --(bw CLI: sync + list items)--> secret-sync --> file backend  (Comp
    access to only the needed collections) and get its API key
    (*Settings → Security → Keys → View API key*).
 2. Put the credentials into files outside of git, e.g. `bootstrap/bw_client_id`,
-   `bw_client_secret`, `bw_password`, `sync_webhook_token`.
+   `bw_client_secret`, `bw_password`, `sync_webhook_token`. Compose bind-mounts
+   these files with their host permissions and ignores `uid`/`gid`/`mode`, while
+   the container runs as UID 1000 (`node`). Make them readable for that user:
+   `sudo chown 1000:1000 bootstrap/* && chmod 400 bootstrap/*` (or `chmod 444`).
 3. Copy [examples/config.yaml](examples/config.yaml) to `config/config.yaml` and
    adapt it.
 4. Start with [examples/compose.yaml](examples/compose.yaml). Consumers mount the
