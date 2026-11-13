@@ -94,22 +94,44 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("fetch vault: %w", err)
 	}
 
-	secrets := s.Cfg.Secrets
+	secrets := make([]origSecret, 0, len(s.Cfg.Secrets))
+	for _, sec := range s.Cfg.Secrets {
+		secrets = append(secrets, origSecret{sec, originConfig})
+	}
 	var errs []error
+	discoveryOK := true
+	discovered := map[string]bool{}
 	if s.Cfg.Discovery.Labels && s.Containers != nil {
 		found, derrs, err := s.discover(ctx)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("label discovery: %w", err))
+			discoveryOK = false
+		}
+		if len(derrs) > 0 {
+			discoveryOK = false
 		}
 		errs = append(errs, derrs...)
-		secrets = append(append([]config.Secret(nil), secrets...), found...)
+		for _, sec := range found {
+			discovered[sec.Name] = true
+			secrets = append(secrets, origSecret{sec, originLabel})
+		}
 	}
 
-	for _, base := range secrets {
-		sec := s.withGroup(vault, base)
-		if err := s.syncSecret(ctx, vault, sec); err != nil {
+	var keep []managedFile
+	for _, o := range secrets {
+		sec := s.withGroup(vault, o.Secret)
+		err := s.syncSecret(ctx, vault, sec)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("secret %q: %w", sec.Name, err))
 		}
+		// Only a definitive "item not found" makes a file stale; any other
+		// error keeps the existing file.
+		if sec.Backend == config.BackendFile && !errors.Is(err, bw.ErrNotFound) {
+			keep = append(keep, managedFile{Origin: o.origin, Name: sec.Name, Path: sec.Path})
+		}
+	}
+	if s.Cfg.PruneEnabled() {
+		s.prune(keep, discovered, discoveryOK)
 	}
 	err = errors.Join(errs...)
 	s.healthy.Store(err == nil)

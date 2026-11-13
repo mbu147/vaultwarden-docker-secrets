@@ -122,6 +122,24 @@ hard barrier. A container that mounts the whole volume, or anyone who can
 create containers or reach the Docker socket, can still read everything. The
 `file` backend only; Swarm secrets already have per-service access.
 
+## Pruning stale files
+
+With `prune: true` (default; `SECRET_SYNC_PRUNE=false` disables it) secret-sync
+keeps a list of the files it wrote (`.secret-sync-managed` in `secret_dir`) and
+removes those that a sync run no longer produces, plus emptied group
+directories. This happens when
+
+- the item was deleted in Vaultwarden (or the service user lost access to it),
+- the item moved to another `group` (the old copy is removed),
+- a secret was removed from `config.yaml`.
+
+Files it did not write are never touched. Nothing is removed when the vault
+fetch fails or label discovery fails, and temporary errors (e.g. an empty
+field) keep the existing file. Files of label-defined secrets are only removed
+while the secret is still discovered; labels of stopped or removed containers
+are invisible, so those files stay until you delete them by hand. Consumers keep
+the file open until restarted, but new reads fail once it is gone.
+
 ## Docker socket access
 
 The socket proxy runs unprivileged, so it must be a member of the group that
@@ -181,6 +199,7 @@ environment variable, and environment variables override the file. Only the
 | `BW_CLIENTID`, `BW_CLIENTSECRET`, `BW_PASSWORD` | credential values (used when no file is set) |
 | `SECRET_SYNC_INTERVAL` | `interval` |
 | `SECRET_SYNC_ROTATE` | `rotate` |
+| `SECRET_SYNC_PRUNE` | `prune` |
 | `SECRET_SYNC_SECRET_DIR` | `secret_dir` |
 | `SECRET_SYNC_READY_FILE` | `ready_file` |
 | `SECRET_SYNC_WEBHOOK_LISTEN`, `SECRET_SYNC_WEBHOOK_TOKEN_FILE` | `webhook.*` |
@@ -195,6 +214,7 @@ environment variable, and environment variables override the file. Only the
 | `bitwarden.client_id_file` / `client_secret_file` / `password_file` | – | Credential files; fall back to `BW_CLIENTID`, `BW_CLIENTSECRET`, `BW_PASSWORD` |
 | `interval` | `5m` | Poll interval, minimum `10s` |
 | `rotate` | `true` | Default rotation behavior |
+| `prune` | `true` | Remove files secret-sync wrote earlier but no longer produces, see [Pruning](#pruning-stale-files) |
 | `secret_dir` | `/secrets` | Target directory of the `file` backend |
 | `ready_file` | `/tmp/secret-sync.ready` | Created after the first fully successful sync; used by `-healthcheck` |
 | `webhook.listen` / `webhook.token_file` | off | Enables `POST /sync` and `GET /healthz` |

@@ -13,6 +13,9 @@ import (
 	"sync"
 )
 
+// ErrNotFound is returned (wrapped) when no item matches a selector.
+var ErrNotFound = errors.New("not found")
+
 // Item is the subset of a Bitwarden item that secret-sync needs.
 type Item struct {
 	ID            string   `json:"id"`
@@ -224,7 +227,7 @@ func (v *Vault) find(item, folder, collection string) (Item, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return Item{}, fmt.Errorf("item %q not found", item)
+		return Item{}, fmt.Errorf("item %q %w", item, ErrNotFound)
 	case 1:
 	default:
 		return Item{}, fmt.Errorf("item %q is ambiguous (%d matches); use the item ID or narrow by folder/collection", item, len(matches))

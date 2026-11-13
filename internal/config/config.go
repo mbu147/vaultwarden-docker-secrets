@@ -34,7 +34,10 @@ type Config struct {
 	Bitwarden Bitwarden     `yaml:"bitwarden"`
 	Interval  time.Duration `yaml:"interval"`
 	// Rotate is the default for secrets that do not set rotate explicitly.
-	Rotate    *bool     `yaml:"rotate"`
+	Rotate *bool `yaml:"rotate"`
+	// Prune removes files secret-sync wrote earlier but no longer produces
+	// (item deleted in the vault, group changed, secret removed). Default true.
+	Prune     *bool     `yaml:"prune"`
 	SecretDir string    `yaml:"secret_dir"`
 	ReadyFile string    `yaml:"ready_file"`
 	Webhook   Webhook   `yaml:"webhook"`
@@ -100,6 +103,11 @@ type OnChange struct {
 	Action     string   `yaml:"action"`
 	Containers []string `yaml:"containers"`
 	Signal     string   `yaml:"signal"`
+}
+
+// PruneEnabled reports whether stale files are removed (default true).
+func (c *Config) PruneEnabled() bool {
+	return c.Prune == nil || *c.Prune
 }
 
 // RotateEnabled reports whether the secret may be updated after creation.
@@ -184,6 +192,13 @@ func (c *Config) applyEnv(get func(string) string) error {
 	}
 	if b != nil {
 		c.Rotate = b
+	}
+	b, err = boolean("SECRET_SYNC_PRUNE")
+	if err != nil {
+		return err
+	}
+	if b != nil {
+		c.Prune = b
 	}
 	b, err = boolean("SECRET_SYNC_DISCOVERY_LABELS")
 	if err != nil {

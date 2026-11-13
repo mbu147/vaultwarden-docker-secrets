@@ -19,6 +19,10 @@ interval: 5m
 # false: write once and never overwrite (changes are only logged)
 rotate: true
 
+# Remove files that secret-sync wrote earlier but no longer produces (item
+# deleted in the vault, moved to another group, secret removed from this file).
+prune: true
+
 # Directory for the "file" backend.
 secret_dir: /secrets
 

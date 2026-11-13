@@ -71,7 +71,7 @@ func TestGroupField(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s := New(cfg, &groupVault{tc.value}, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, &fakeContainers{})
+		s := New(cfg, &groupVault{group: tc.value}, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, &fakeContainers{})
 		if err := s.SyncOnce(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -81,9 +81,77 @@ func TestGroupField(t *testing.T) {
 	}
 }
 
-type groupVault struct{ group string }
+func TestPrune(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := config.Parse([]byte("secret_dir: " + filepath.ToSlash(dir) + "\nready_file: " +
+		filepath.ToSlash(filepath.Join(dir, "ready")) + "\nsecrets:\n  - name: db\n    source: {item: db}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := filepath.Join(dir, "foreign")
+	if err := os.WriteFile(foreign, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v := &groupVault{group: "mariadb"}
+	s := New(cfg, v, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, &fakeContainers{})
+	ctx := context.Background()
+	if err := s.SyncOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Moving the item to another group removes the old file and its empty dir.
+	v.group = "other"
+	if err := s.SyncOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "mariadb")); err == nil {
+		t.Error("old group directory should be removed")
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "other", "db")); string(got) != "pw" {
+		t.Errorf("new file missing: %q", got)
+	}
+
+	// Deleting the item in the vault removes the file; foreign files stay.
+	v.missing = true
+	if err := s.SyncOnce(ctx); err == nil {
+		t.Fatal("expected not-found error")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "other", "db")); err == nil {
+		t.Error("file of deleted item should be removed")
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Error("foreign file must not be removed")
+	}
+}
+
+func TestPruneDisabled(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := config.Parse([]byte("prune: false\nsecret_dir: " + filepath.ToSlash(dir) + "\nready_file: " +
+		filepath.ToSlash(filepath.Join(dir, "ready")) + "\nsecrets:\n  - name: db\n    source: {item: db}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := &groupVault{}
+	s := New(cfg, v, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, &fakeContainers{})
+	if err := s.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	v.missing = true
+	_ = s.SyncOnce(context.Background())
+	if _, err := os.Stat(filepath.Join(dir, "db")); err != nil {
+		t.Error("prune disabled: file must stay")
+	}
+}
+
+type groupVault struct {
+	group   string
+	missing bool
+}
 
 func (g *groupVault) Fetch(context.Context) (*bw.Vault, error) {
+	if g.missing {
+		return &bw.Vault{}, nil
+	}
 	it := bw.Item{ID: "1", Name: "db"}
 	it.Login = &struct {
 		Username string `json:"username"`
