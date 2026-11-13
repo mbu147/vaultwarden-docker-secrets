@@ -61,7 +61,6 @@ services:
       # Option B (needs discovery.labels: true): define the secret right here.
       # The container is restarted on rotation automatically.
       # secret-sync.db_password.item: postgres
-      # secret-sync.db_password.mode: "0444"
 
 volumes:
   secrets:

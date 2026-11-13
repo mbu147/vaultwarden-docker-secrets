@@ -11,7 +11,7 @@ func TestParseDefaults(t *testing.T) {
 	if s.Source.Field != "password" || s.Backend != BackendFile || s.Path != "db" {
 		t.Fatalf("unexpected defaults: %+v", s)
 	}
-	if s.FileMode != 0o400 || s.OnChange.Action != ActionNone {
+	if s.FileMode != 0o444 || s.OnChange.Action != ActionNone {
 		t.Fatalf("unexpected defaults: %+v", s)
 	}
 	if !c.RotateEnabled(s) {

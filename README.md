@@ -94,7 +94,7 @@ See [examples/config.yaml](examples/config.yaml) for a fully commented file.
 | `secrets[].source.field` | `password` | `password`, `username`, `notes`, `uri`, `custom:<name>` |
 | `secrets[].backend` | `file` | `file` or `swarm` |
 | `secrets[].path` | `<name>` | File path below `secret_dir` (`file` backend) |
-| `secrets[].mode` | `0400` | Octal file mode. Use `0444` if consumers run as a different user |
+| `secrets[].mode` | `0444` | Octal file mode. Consumers usually run as a different user, so files are world-readable by default; use `0400` for stricter access |
 | `secrets[].rotate` | global | Per-secret override |
 | `secrets[].on_change.action` | `none` | `none`, `restart`, `signal` |
 | `secrets[].on_change.containers` | – | Container names/IDs to act on, in addition to labeled ones |
@@ -113,7 +113,6 @@ services:
       - secrets:/run/secrets:ro
     labels:
       secret-sync.db_password.item: postgres
-      secret-sync.db_password.mode: "0444"
       secret-sync.api_token.item: my-api
       secret-sync.api_token.field: custom:token
       secret-sync.api_token.action: signal      # restart (default) | signal | none

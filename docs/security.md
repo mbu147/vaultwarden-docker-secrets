@@ -34,8 +34,10 @@ containers' secrets, so treat it as a high-value component.
 
 - Run `read_only: true`, `cap_drop: [ALL]`, `no-new-privileges`, non-root user.
 - Put the shared secrets volume on tmpfs so values are never written to disk.
-- Default file mode is `0400`. If consumers run as a different user, set
-  `mode: "0444"` on a tmpfs volume only mounted by the consumers that need it.
+- Default file mode is `0444` because consumers usually run as a different user
+  than secret-sync. Keep the shared secrets volume on tmpfs and mount it only
+  into the consumers that need it. Set `mode: "0400"` per secret for stricter
+  access if the consumer runs as the same user.
 - The webhook requires a bearer token. Bind it to an internal network or
   localhost and put TLS in front if it is reachable from outside.
 

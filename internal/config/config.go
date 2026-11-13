@@ -193,7 +193,7 @@ func NormalizeSecret(s *Secret) error {
 		return fmt.Errorf("secret %q: unknown backend %q", s.Name, s.Backend)
 	}
 
-	s.FileMode = 0o400
+	s.FileMode = 0o444
 	if s.Mode != "" {
 		m, err := strconv.ParseUint(s.Mode, 8, 32)
 		if err != nil {

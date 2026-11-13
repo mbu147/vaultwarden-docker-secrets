@@ -48,7 +48,7 @@ secrets:
       folder: homelab         # optional filter
       field: password         # password (default) | username | notes | uri | custom:<name>
     backend: file             # file (default) | swarm
-    mode: "0444"              # file mode; use 0444 if consumers run as another user
+    mode: "0444"              # file mode (default 0444)
     on_change:
       action: restart         # none (default) | restart | signal
       containers: [app]       # names/IDs; labeled containers are added automatically
