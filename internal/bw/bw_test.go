@@ -71,6 +71,14 @@ func TestSyncedErrors(t *testing.T) {
 	}
 }
 
+func TestSyncedMultipleGroups(t *testing.T) {
+	v := &Vault{Items: []Item{item("pw", fld{"sync_enabled", "true"}, fld{"group", "mariadb, caddy,,mariadb"})}}
+	got, errs := v.Synced()
+	if len(errs) != 0 || len(got) != 2 || got[0].Group != "mariadb" || got[1].Group != "caddy" {
+		t.Fatalf("got %+v, errs %v", got, errs)
+	}
+}
+
 func TestSanitize(t *testing.T) {
 	for in, want := range map[string]string{"a b/c": "a_b_c", "..x": "__x", "ok-1.2": "ok-1.2", "ä": "_"} {
 		if got := Sanitize(in); got != want {

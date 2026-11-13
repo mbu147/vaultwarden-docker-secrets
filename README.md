@@ -49,7 +49,7 @@ Add these **custom fields** to an item (type text or boolean):
 | Field | Required | Meaning |
 |---|---|---|
 | `sync_enabled` | yes | `true` (also `1`, `yes`, `on`) opts the item in. Missing or anything else: the item is ignored (and its files are removed). |
-| `group` | no | Subdirectory for the item. Missing or empty: no subdirectory. No `/`, `\`, `.` or `..`. |
+| `group` | no | Subdirectory for the item. Comma-separated list (`mariadb, caddy`) writes the item into every listed group. Missing or empty: no subdirectory. No `/`, `\`, `.` or `..`. |
 
 Resulting layout (item names are sanitized: characters other than
 `A-Z a-z 0-9 . _ -` become `_`, leading dots are replaced):

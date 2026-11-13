@@ -106,33 +106,51 @@ func (v *Vault) Synced() ([]SyncedItem, []error) {
 		if val, ok := it.field(SyncField); !ok || !truthy(val) {
 			continue
 		}
-		si, err := it.toSynced()
+		si, groups, err := it.toSynced()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("item %q: %w", it.Name, err))
 			continue
 		}
-		key := si.RelPath("")
-		if other, dup := owner[key]; dup {
-			errs = append(errs, fmt.Errorf("item %q: directory %q is already used by item %q", it.Name, key, other))
-			continue
+		for _, g := range groups {
+			cp := si
+			cp.Group = g
+			key := cp.RelPath("")
+			if other, dup := owner[key]; dup {
+				errs = append(errs, fmt.Errorf("item %q: directory %q is already used by item %q", it.Name, key, other))
+				continue
+			}
+			owner[key] = it.Name
+			out = append(out, cp)
 		}
-		owner[key] = it.Name
-		out = append(out, si)
 	}
 	return out, errs
 }
 
-func (it Item) toSynced() (SyncedItem, error) {
+// toSynced returns the item with its files and the groups it belongs to
+// (a single empty group if the field is absent or blank).
+func (it Item) toSynced() (SyncedItem, []string, error) {
 	si := SyncedItem{Dir: Sanitize(it.Name)}
 	if si.Dir == "" || strings.Trim(si.Dir, "_") == "" {
-		return si, errors.New("name contains no usable characters")
+		return si, nil, errors.New("name contains no usable characters")
 	}
-	if g, ok := it.field(GroupField); ok {
-		g = strings.TrimSpace(g)
-		if g == "." || g == ".." || strings.ContainsAny(g, `/\`) {
-			return si, fmt.Errorf("invalid group %q", g)
+	groups := []string{""}
+	if raw, ok := it.field(GroupField); ok {
+		groups = nil
+		seen := map[string]bool{}
+		for _, g := range strings.Split(raw, ",") {
+			g = strings.TrimSpace(g)
+			if g == "" || seen[g] {
+				continue
+			}
+			if g == "." || g == ".." || strings.ContainsAny(g, `/\`) {
+				return si, nil, fmt.Errorf("invalid group %q", g)
+			}
+			seen[g] = true
+			groups = append(groups, g)
 		}
-		si.Group = g
+		if len(groups) == 0 {
+			groups = []string{""}
+		}
 	}
 
 	add := func(name, value string) {
@@ -158,15 +176,15 @@ func (it Item) toSynced() (SyncedItem, error) {
 		}
 		name := Sanitize(f.Name)
 		if name == "" {
-			return si, fmt.Errorf("custom field %q has no usable name", f.Name)
+			return si, nil, fmt.Errorf("custom field %q has no usable name", f.Name)
 		}
 		if used[name] {
-			return si, fmt.Errorf("custom field %q collides with another file %q", f.Name, name)
+			return si, nil, fmt.Errorf("custom field %q collides with another file %q", f.Name, name)
 		}
 		used[name] = true
 		add(name, f.Value)
 	}
-	return si, nil
+	return si, groups, nil
 }
 
 // Credentials used to log in and unlock the vault.
