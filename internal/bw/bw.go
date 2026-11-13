@@ -177,6 +177,38 @@ func (c *Client) fetch(ctx context.Context) (*Vault, error) {
 
 // Resolve finds exactly one item matching the selector and extracts a field.
 func (v *Vault) Resolve(item, folder, collection, field string) ([]byte, error) {
+	it, err := v.find(item, folder, collection)
+	if err != nil {
+		return nil, err
+	}
+	return extract(it, field)
+}
+
+// GroupField is the optional custom field that places an item's secrets in a
+// subdirectory (group) of the secret directory.
+const GroupField = "group"
+
+// Group returns the value of the custom field "group" of the item. It is empty
+// if the field is absent or blank.
+func (v *Vault) Group(item, folder, collection string) (string, error) {
+	it, err := v.find(item, folder, collection)
+	if err != nil {
+		return "", err
+	}
+	for _, f := range it.Fields {
+		if f.Name != GroupField {
+			continue
+		}
+		g := strings.TrimSpace(f.Value)
+		if g == "." || g == ".." || strings.ContainsAny(g, `/\`) {
+			return "", fmt.Errorf("item %q: invalid group %q in field %q", it.Name, g, GroupField)
+		}
+		return g, nil
+	}
+	return "", nil
+}
+
+func (v *Vault) find(item, folder, collection string) (Item, error) {
 	var matches []Item
 	for _, it := range v.Items {
 		if it.ID != item && it.Name != item {
@@ -192,12 +224,12 @@ func (v *Vault) Resolve(item, folder, collection, field string) ([]byte, error) 
 	}
 	switch len(matches) {
 	case 0:
-		return nil, fmt.Errorf("item %q not found", item)
+		return Item{}, fmt.Errorf("item %q not found", item)
 	case 1:
 	default:
-		return nil, fmt.Errorf("item %q is ambiguous (%d matches); use the item ID or narrow by folder/collection", item, len(matches))
+		return Item{}, fmt.Errorf("item %q is ambiguous (%d matches); use the item ID or narrow by folder/collection", item, len(matches))
 	}
-	return extract(matches[0], field)
+	return matches[0], nil
 }
 
 func (v *Vault) inCollection(it Item, name string) bool {

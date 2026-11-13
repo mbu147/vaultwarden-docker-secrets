@@ -60,6 +60,45 @@ func newTest(t *testing.T, rotate bool, action string) (*Syncer, *fakeVault, *fa
 	return s, v, c, dir
 }
 
+func TestGroupField(t *testing.T) {
+	for _, tc := range []struct{ value, file string }{
+		{"mariadb", "mariadb/db"},
+		{"  ", "db"}, // blank field: unchanged
+	} {
+		dir := t.TempDir()
+		cfg, err := config.Parse([]byte("secret_dir: " + filepath.ToSlash(dir) + "\nready_file: " +
+			filepath.ToSlash(filepath.Join(dir, "ready")) + "\nsecrets:\n  - name: db\n    source: {item: db}\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := New(cfg, &groupVault{tc.value}, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, &fakeContainers{})
+		if err := s.SyncOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(tc.file))); string(got) != "pw" {
+			t.Errorf("group %q: %s has %q", tc.value, tc.file, got)
+		}
+	}
+}
+
+type groupVault struct{ group string }
+
+func (g *groupVault) Fetch(context.Context) (*bw.Vault, error) {
+	it := bw.Item{ID: "1", Name: "db"}
+	it.Login = &struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		URIs     []struct {
+			URI string `json:"uri"`
+		} `json:"uris"`
+	}{Password: "pw"}
+	it.Fields = []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}{{Name: "group", Value: g.group}}
+	return &bw.Vault{Items: []bw.Item{it}}, nil
+}
+
 func TestRotation(t *testing.T) {
 	s, v, c, dir := newTest(t, true, "restart")
 	ctx := context.Background()

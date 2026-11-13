@@ -89,6 +89,39 @@ volumes:
 Start `secret-sync` first (there is no `depends_on` across projects). Consumers
 that start before the files exist should use `restart: unless-stopped`.
 
+## Restricting secrets to a group
+
+A shared volume exposes every file to every container that mounts it. To
+separate them, add an **optional custom text field** named `group` to the
+Vaultwarden item, e.g. `mariadb`. Secret-sync then writes that item's secrets to
+`/secrets/<group>/<name>` instead of `/secrets/<name>`. Without the field, or
+with an empty one, nothing changes. Labels, rotation targets and restarts are
+not affected; only the file location differs.
+
+A consumer mounts just its group directory (Compose >= 2.26, Docker >= 26):
+
+```yaml
+services:
+  mariadb:
+    volumes:
+      - type: volume
+        source: secrets
+        target: /run/secrets
+        read_only: true
+        volume:
+          subpath: mariadb
+
+volumes:
+  secrets:
+    external: true
+```
+
+The file is still available as `/run/secrets/<name>` inside the container.
+Several containers may share a group. Limits: this separates files, it is not a
+hard barrier. A container that mounts the whole volume, or anyone who can
+create containers or reach the Docker socket, can still read everything. The
+`file` backend only; Swarm secrets already have per-service access.
+
 ## Docker socket access
 
 The socket proxy runs unprivileged, so it must be a member of the group that

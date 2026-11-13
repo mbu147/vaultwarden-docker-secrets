@@ -105,7 +105,8 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		secrets = append(append([]config.Secret(nil), secrets...), found...)
 	}
 
-	for _, sec := range secrets {
+	for _, base := range secrets {
+		sec := s.withGroup(vault, base)
 		if err := s.syncSecret(ctx, vault, sec); err != nil {
 			errs = append(errs, fmt.Errorf("secret %q: %w", sec.Name, err))
 		}
@@ -138,6 +139,20 @@ func (s *Syncer) markReady() {
 	if err := os.WriteFile(s.Cfg.ReadyFile, []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {
 		slog.Warn("could not write ready file", "error", err)
 	}
+}
+
+// withGroup moves a file secret into <group>/ when its Vaultwarden item has a
+// non-empty custom field "group". Without the field (or with an empty one) the
+// secret is unchanged. Rotation targets and labels are not affected.
+func (s *Syncer) withGroup(vault *bw.Vault, sec config.Secret) config.Secret {
+	if sec.Backend != config.BackendFile {
+		return sec
+	}
+	// Lookup errors surface in syncSecret.
+	if g, err := vault.Group(sec.Source.Item, sec.Source.Folder, sec.Source.Collection); err == nil && g != "" {
+		sec.Path = g + "/" + sec.Path
+	}
+	return sec
 }
 
 func (s *Syncer) syncSecret(ctx context.Context, vault *bw.Vault, sec config.Secret) error {
