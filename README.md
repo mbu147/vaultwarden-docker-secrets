@@ -176,7 +176,21 @@ services:
       secret-sync.api_token.action: signal      # restart (default) | signal | none
 ```
 
-Label format: `secret-sync.<name>.<key>`; the name may contain dots, the key is the
+Shorthand: one label per Vaultwarden item creates one secret per listed field,
+named `<item>_<field>`:
+
+```yaml
+labels:
+  secret-sync.item.test1: user,password   # secrets test1_user (username) and test1_password
+  secret-sync.item.myapi: custom:token    # secret myapi_token (custom field "token")
+```
+
+Fields: `user`, `password`, `notes`, `uri`, `custom:<name>`. The item name must
+only contain `[A-Za-z0-9._-]`; otherwise use the long form. Long-form labels for
+a generated name (e.g. `secret-sync.test1_user.mode: "0400"`) refine or override
+the shorthand.
+
+Long form: `secret-sync.<name>.<key>`; the name may contain dots, the key is the
 last segment. Keys: `item` (required), `folder`, `collection`, `field`, `path`,
 `mode`, `rotate`, `action`, `signal`, with the same meaning as in the config file.
 Rules:

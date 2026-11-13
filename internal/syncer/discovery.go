@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -30,7 +31,11 @@ func discoverSecrets(containers []docker.Container, configured map[string]bool) 
 	failed := map[string]bool{}
 
 	for _, c := range sorted {
-		for name, keys := range groupLabels(c.Labels) {
+		labels, err := expandItemLabels(c.Labels)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("container %s: %w", containerName(c), err))
+		}
+		for name, keys := range groupLabels(labels) {
 			if configured[name] || failed[name] {
 				continue
 			}
@@ -63,6 +68,70 @@ func discoverSecrets(containers []docker.Container, configured map[string]bool) 
 		}
 	}
 	return kept, errs
+}
+
+// itemLabelPrefix introduces the shorthand secret-sync.item.<item>: <fields>.
+const itemLabelPrefix = labelPrefix + "item."
+
+// fieldAliases maps shorthand field names to Vaultwarden fields.
+var fieldAliases = map[string]string{
+	"user":     "username",
+	"username": "username",
+	"password": "password",
+	"notes":    "notes",
+	"uri":      "uri",
+}
+
+// expandItemLabels rewrites the shorthand labels
+//
+//	secret-sync.item.<item>: user,password,custom:token
+//
+// into the long form: one secret per field named <item>_<alias> (user,
+// password, notes, uri or the custom field name). Explicit long-form labels
+// for the same secret win. The returned map never contains shorthand labels.
+func expandItemLabels(labels map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(labels))
+	var shorthand []string
+	for k, v := range labels {
+		if strings.HasPrefix(k, itemLabelPrefix) {
+			shorthand = append(shorthand, k)
+			continue
+		}
+		out[k] = v
+	}
+	sort.Strings(shorthand)
+
+	var errs []error
+	for _, k := range shorthand {
+		item := strings.TrimPrefix(k, itemLabelPrefix)
+		if item == "" {
+			errs = append(errs, fmt.Errorf("label %q: item name is empty", k))
+			continue
+		}
+		for _, f := range strings.Split(labels[k], ",") {
+			f = strings.TrimSpace(f)
+			field, alias := f, f
+			switch {
+			case f == "":
+				continue
+			case strings.HasPrefix(f, "custom:"):
+				alias = strings.TrimPrefix(f, "custom:")
+			case fieldAliases[f] != "":
+				field = fieldAliases[f]
+			default:
+				errs = append(errs, fmt.Errorf("label %q: unknown field %q (use user, password, notes, uri or custom:<name>)", k, f))
+				continue
+			}
+			prefix := labelPrefix + item + "_" + alias + "."
+			if _, ok := out[prefix+"item"]; !ok {
+				out[prefix+"item"] = item
+			}
+			if _, ok := out[prefix+"field"]; !ok {
+				out[prefix+"field"] = field
+			}
+		}
+	}
+	return out, errors.Join(errs...)
 }
 
 // groupLabels returns key/value pairs per secret name.

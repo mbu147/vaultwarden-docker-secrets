@@ -48,6 +48,39 @@ func TestDiscoverSecrets(t *testing.T) {
 	}
 }
 
+func TestItemShorthand(t *testing.T) {
+	c := []docker.Container{{ID: "a", Names: []string{"/app"}, Labels: map[string]string{
+		"secret-sync.item.test1":        "user,password",
+		"secret-sync.item.myapi":        "custom:token, notes",
+		"secret-sync.test1_user.mode":   "0400",
+		"secret-sync.test1_user.action": "none",
+	}}}
+	got, errs := discoverSecrets(c, nil)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	want := map[string]string{
+		"test1_user": "username", "test1_password": "password",
+		"myapi_token": "custom:token", "myapi_notes": "notes",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d secrets: %+v", len(got), got)
+	}
+	for _, s := range got {
+		if want[s.Name] != s.Source.Field {
+			t.Errorf("%s: field %q", s.Name, s.Source.Field)
+		}
+		if s.Name == "test1_user" && (s.FileMode != 0o400 || s.OnChange.Action != "none") {
+			t.Errorf("explicit labels must win: %+v", s)
+		}
+	}
+
+	bad := []docker.Container{{ID: "a", Labels: map[string]string{"secret-sync.item.x": "bogus"}}}
+	if _, errs := discoverSecrets(bad, nil); len(errs) == 0 {
+		t.Fatal("expected error for unknown field")
+	}
+}
+
 func TestDiscoverConfigWins(t *testing.T) {
 	c := []docker.Container{{ID: "a", Labels: map[string]string{"secret-sync.db.item": "x"}}}
 	got, errs := discoverSecrets(c, map[string]bool{"db": true})
