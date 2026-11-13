@@ -26,7 +26,7 @@ containers' secrets, so treat it as a high-value component.
 - The Docker socket is only needed for restart/signal actions and the swarm
   backend, and is only used when configured.
 - Access the Docker API through
-  [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) and
+  [socket-proxy](https://github.com/wollomatic/socket-proxy) and
   grant only what you need (see [examples/compose.yaml](../examples/compose.yaml)).
   Mounting the raw socket is equivalent to root on the host.
 

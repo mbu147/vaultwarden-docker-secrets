@@ -115,7 +115,7 @@ func needsDocker(cfg *config.Config) bool {
 			return true
 		}
 	}
-	return false
+	return cfg.Discovery.Labels
 }
 
 func loadCredentials(b config.Bitwarden) (bw.Credentials, error) {

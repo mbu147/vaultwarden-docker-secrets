@@ -32,6 +32,7 @@ Flow: `cmd/secret-sync/main.go` wires everything → `internal/syncer` runs a lo
 - **Swarm secrets are immutable**: a change creates `<name>_v<hash8>` with labels `secret-sync.name` / `secret-sync.hash`, rewrites `SecretID`/`SecretName` in every service spec that references older versions (the in-container `File.Name` is kept), then deletes old versions. The Swarm backend updates services itself, so `on_change` actions are skipped for it (`runAction`).
 - **Rotation semantics**: a secret that does not exist yet is just created and never triggers actions. With `rotate: false`, an existing secret is kept and only a warning is logged.
 - Rotation targets = `on_change.containers` plus running containers labeled `secret-sync.restart=<secret>[,<secret>]`.
+- Label discovery (`internal/syncer/discovery.go`, opt-in via `discovery.labels`) turns `secret-sync.<name>.<key>` labels into file secrets on every run; the label's container becomes the rotation target. Config-file secrets win, conflicting declarations are rejected, and per-secret validation is shared via `config.NormalizeSecret`.
 - Never log secret values; log only name and first 8 chars of the hash.
 - The healthcheck (`-healthcheck`) only checks for the ready file, which is written after the first fully successful sync.
 - The Docker client is created only if a secret uses the swarm backend or an `on_change` action (`needsDocker` in `main.go`).

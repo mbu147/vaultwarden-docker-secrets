@@ -29,6 +29,12 @@ func TestRotateOverride(t *testing.T) {
 	}
 }
 
+func TestDiscoveryOnlyConfig(t *testing.T) {
+	if _, err := Parse([]byte("discovery: {labels: true}\n")); err != nil {
+		t.Fatalf("labels discovery should not require config secrets: %v", err)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	bad := map[string]string{
 		"no secrets":   "interval: 1m\n",

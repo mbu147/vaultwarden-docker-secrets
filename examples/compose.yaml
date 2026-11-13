@@ -2,18 +2,27 @@
 # that consumer containers mount read-only. Nothing is stored on disk.
 services:
   docker-proxy:
-    image: tecnativa/docker-socket-proxy:latest
+    image: ghcr.io/wollomatic/socket-proxy:1
+    container_name: docker-proxy
     restart: unless-stopped
-    environment:
-      CONTAINERS: 1       # list containers
-      POST: 1             # allow write calls
-      ALLOW_RESTARTS: 1   # restart and kill (signal action)
-      # The swarm backend additionally needs SECRETS: 1, SERVICES: 1, SWARM: 1.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - "-listenip=0.0.0.0"
+      - "-allowfrom=secret-sync"   # container name of secret-sync, nothing else may connect
+      - "-allowGET=/containers/json"
+      - "-allowPOST=/containers/[^/]+/(restart|kill)"
+      # Swarm backend additionally needs:
+      # - "-allowGET=/(secrets|services)"
+      # - "-allowPOST=/(secrets/create|services/[^/]+/update)"
+      # - "-allowDELETE=/secrets/[^/]+"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [sync]
 
   secret-sync:
+    container_name: secret-sync
     image: ghcr.io/mbu147/vaultwarden-docker-secrets:latest
     restart: unless-stopped
     depends_on: [docker-proxy]
@@ -33,6 +42,8 @@ services:
       retries: 6
     networks: [sync]
 
+  # Example consumer: replace with your own service. Any container that can
+  # read a secret from a file works (many images support *_FILE variables).
   app:
     image: your/app:latest
     # Wait until the first sync has written all secrets.
@@ -43,6 +54,14 @@ services:
       - secrets:/run/secrets:ro
     environment:
       DB_PASSWORD_FILE: /run/secrets/db_password
+    labels:
+      # Option A: the secret is defined in config.yaml, this container is only
+      # restarted when it rotates.
+      secret-sync.restart: "db_password"
+      # Option B (needs discovery.labels: true): define the secret right here.
+      # The container is restarted on rotation automatically.
+      # secret-sync.db_password.item: postgres
+      # secret-sync.db_password.mode: "0444"
 
 volumes:
   secrets:

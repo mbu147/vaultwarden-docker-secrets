@@ -94,8 +94,18 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("fetch vault: %w", err)
 	}
 
+	secrets := s.Cfg.Secrets
 	var errs []error
-	for _, sec := range s.Cfg.Secrets {
+	if s.Cfg.Discovery.Labels && s.Containers != nil {
+		found, derrs, err := s.discover(ctx)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("label discovery: %w", err))
+		}
+		errs = append(errs, derrs...)
+		secrets = append(append([]config.Secret(nil), secrets...), found...)
+	}
+
+	for _, sec := range secrets {
 		if err := s.syncSecret(ctx, vault, sec); err != nil {
 			errs = append(errs, fmt.Errorf("secret %q: %w", sec.Name, err))
 		}
@@ -106,6 +116,19 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		s.markReady()
 	}
 	return err
+}
+
+func (s *Syncer) discover(ctx context.Context) ([]config.Secret, []error, error) {
+	containers, err := s.Containers.ListContainers(ctx, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	configured := map[string]bool{}
+	for _, sec := range s.Cfg.Secrets {
+		configured[sec.Name] = true
+	}
+	found, errs := discoverSecrets(containers, configured)
+	return found, errs, nil
 }
 
 func (s *Syncer) markReady() {

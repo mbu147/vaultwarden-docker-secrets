@@ -33,6 +33,13 @@ webhook:
 docker:
   host: tcp://docker-proxy:2375
 
+# Optional: let containers declare secrets with labels
+# (secret-sync.<name>.item, .field, .folder, .collection, .path, .mode,
+# .rotate, .action, .signal). Needs the Docker API. Secrets defined below win
+# over labels with the same name. See README.md.
+discovery:
+  labels: false
+
 secrets:
   # Written to /secrets/db_password, app is restarted when the value changes.
   - name: db_password

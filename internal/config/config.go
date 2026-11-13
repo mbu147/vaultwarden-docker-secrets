@@ -32,12 +32,20 @@ type Config struct {
 	Bitwarden Bitwarden     `yaml:"bitwarden"`
 	Interval  time.Duration `yaml:"interval"`
 	// Rotate is the default for secrets that do not set rotate explicitly.
-	Rotate    *bool    `yaml:"rotate"`
-	SecretDir string   `yaml:"secret_dir"`
-	ReadyFile string   `yaml:"ready_file"`
-	Webhook   Webhook  `yaml:"webhook"`
-	Docker    Docker   `yaml:"docker"`
-	Secrets   []Secret `yaml:"secrets"`
+	Rotate    *bool     `yaml:"rotate"`
+	SecretDir string    `yaml:"secret_dir"`
+	ReadyFile string    `yaml:"ready_file"`
+	Webhook   Webhook   `yaml:"webhook"`
+	Docker    Docker    `yaml:"docker"`
+	Discovery Discovery `yaml:"discovery"`
+	Secrets   []Secret  `yaml:"secrets"`
+}
+
+// Discovery configures secrets that are declared with container labels.
+type Discovery struct {
+	// Labels enables reading secret definitions from container labels
+	// (secret-sync.<name>.<key>). Requires Docker API access.
+	Labels bool `yaml:"labels"`
 }
 
 // Bitwarden holds connection and credential settings. Credentials are read
@@ -142,61 +150,69 @@ func (c *Config) applyDefaults() error {
 	if c.Webhook.Listen != "" && c.Webhook.TokenFile == "" {
 		return fmt.Errorf("webhook.token_file is required when webhook.listen is set")
 	}
-	if len(c.Secrets) == 0 {
-		return fmt.Errorf("no secrets configured")
+	if len(c.Secrets) == 0 && !c.Discovery.Labels {
+		return fmt.Errorf("no secrets configured (add secrets: entries or enable discovery.labels)")
 	}
 
 	seen := map[string]bool{}
 	for i := range c.Secrets {
 		s := &c.Secrets[i]
-		if !nameRe.MatchString(s.Name) {
-			return fmt.Errorf("secrets[%d]: invalid name %q", i, s.Name)
-		}
 		if seen[s.Name] {
 			return fmt.Errorf("secrets[%d]: duplicate name %q", i, s.Name)
 		}
 		seen[s.Name] = true
+		if err := NormalizeSecret(s); err != nil {
+			return fmt.Errorf("secrets[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
 
-		if s.Source.Item == "" {
-			return fmt.Errorf("secret %q: source.item is required", s.Name)
+// NormalizeSecret applies defaults to a secret and validates it. It is used
+// for secrets from the config file and for secrets discovered from labels.
+func NormalizeSecret(s *Secret) error {
+	if !nameRe.MatchString(s.Name) {
+		return fmt.Errorf("invalid name %q", s.Name)
+	}
+	if s.Source.Item == "" {
+		return fmt.Errorf("secret %q: source.item is required", s.Name)
+	}
+	if s.Source.Field == "" {
+		s.Source.Field = "password"
+	}
+	if s.Backend == "" {
+		s.Backend = BackendFile
+	}
+	switch s.Backend {
+	case BackendFile:
+		if s.Path == "" {
+			s.Path = s.Name
 		}
-		if s.Source.Field == "" {
-			s.Source.Field = "password"
-		}
-		if s.Backend == "" {
-			s.Backend = BackendFile
-		}
-		switch s.Backend {
-		case BackendFile:
-			if s.Path == "" {
-				s.Path = s.Name
-			}
-		case BackendSwarm:
-		default:
-			return fmt.Errorf("secret %q: unknown backend %q", s.Name, s.Backend)
-		}
+	case BackendSwarm:
+	default:
+		return fmt.Errorf("secret %q: unknown backend %q", s.Name, s.Backend)
+	}
 
-		s.FileMode = 0o400
-		if s.Mode != "" {
-			m, err := strconv.ParseUint(s.Mode, 8, 32)
-			if err != nil {
-				return fmt.Errorf("secret %q: invalid mode %q", s.Name, s.Mode)
-			}
-			s.FileMode = os.FileMode(m)
+	s.FileMode = 0o400
+	if s.Mode != "" {
+		m, err := strconv.ParseUint(s.Mode, 8, 32)
+		if err != nil {
+			return fmt.Errorf("secret %q: invalid mode %q", s.Name, s.Mode)
 		}
+		s.FileMode = os.FileMode(m)
+	}
 
-		if s.OnChange.Action == "" {
-			s.OnChange.Action = ActionNone
+	if s.OnChange.Action == "" {
+		s.OnChange.Action = ActionNone
+	}
+	switch s.OnChange.Action {
+	case ActionNone, ActionRestart:
+	case ActionSignal:
+		if s.OnChange.Signal == "" {
+			s.OnChange.Signal = "SIGHUP"
 		}
-		switch s.OnChange.Action {
-		case ActionNone, ActionRestart:
-		case ActionSignal:
-			if s.OnChange.Signal == "" {
-				s.OnChange.Signal = "SIGHUP"
-			}
-		default:
-			return fmt.Errorf("secret %q: unknown on_change.action %q", s.Name, s.OnChange.Action)
-		}
+	default:
+		return fmt.Errorf("secret %q: unknown on_change.action %q", s.Name, s.OnChange.Action)
 	}
 	return nil
 }

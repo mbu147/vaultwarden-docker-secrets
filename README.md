@@ -21,6 +21,9 @@ secrets automatically when they change in the vault.
 - **Rotation switch** (`rotate: true|false`), globally and per secret.
 - **Rotation actions**: restart or signal containers, configured in YAML or via
   the container label `secret-sync.restart=<secret>[,<secret>...]`.
+- **Label-based definitions** (optional): containers declare the secrets they
+  need with `secret-sync.<name>.item` labels, see
+  [Label-based secret definitions](#label-based-secret-definitions).
 - **Sync triggers**: polling interval plus an authenticated webhook
   (`POST /sync`) for instant updates.
 - Credentials from files (Docker secrets) or environment variables.
@@ -84,6 +87,7 @@ See [examples/config.yaml](examples/config.yaml) for a fully commented file.
 | `ready_file` | `/tmp/secret-sync.ready` | Created after the first fully successful sync; used by `-healthcheck` |
 | `webhook.listen` / `webhook.token_file` | off | Enables `POST /sync` and `GET /healthz` |
 | `docker.host` | default socket | `unix:///path` or `tcp://host:port` |
+| `discovery.labels` | `false` | Read secret definitions from container labels |
 | `secrets[].name` | – | Secret name (`[A-Za-z0-9._-]`) |
 | `secrets[].source.item` | – | Item name or ID (must match exactly one item) |
 | `secrets[].source.folder` / `collection` | – | Narrow the lookup by name |
@@ -95,6 +99,45 @@ See [examples/config.yaml](examples/config.yaml) for a fully commented file.
 | `secrets[].on_change.action` | `none` | `none`, `restart`, `signal` |
 | `secrets[].on_change.containers` | – | Container names/IDs to act on, in addition to labeled ones |
 | `secrets[].on_change.signal` | `SIGHUP` | Signal for the `signal` action |
+
+### Label-based secret definitions
+
+With `discovery.labels: true`, containers can declare the secrets they need
+instead of listing them in `config.yaml`:
+
+```yaml
+services:
+  app:
+    image: your/app
+    volumes:
+      - secrets:/run/secrets:ro
+    labels:
+      secret-sync.db_password.item: postgres
+      secret-sync.db_password.mode: "0444"
+      secret-sync.api_token.item: my-api
+      secret-sync.api_token.field: custom:token
+      secret-sync.api_token.action: signal      # restart (default) | signal | none
+```
+
+Label format: `secret-sync.<name>.<key>`; the name may contain dots, the key is the
+last segment. Keys: `item` (required), `folder`, `collection`, `field`, `path`,
+`mode`, `rotate`, `action`, `signal`, with the same meaning as in the config file.
+Rules:
+
+- The declaring container is restarted (or signaled) on rotation, `action`
+  defaults to `restart`. Several containers may declare the same secret if they
+  use identical labels; conflicting declarations are rejected.
+- Secrets in `config.yaml` win over labels with the same name.
+- Labels only create `file` secrets. Use `config.yaml` for the Swarm backend.
+- Discovery runs on every sync (interval or webhook) and only sees **running**
+  containers. A container that waits for `secret-sync` with
+  `depends_on: condition: service_healthy` is not running yet, so its secret does
+  not exist on first start. Define secrets that must exist at startup in
+  `config.yaml`, and use labels for services that can start without them or
+  re-read the file.
+- Secrets whose containers stopped are not removed from the secrets directory.
+- Only enable this where everyone who can create containers is trusted: any
+  container with such labels can request items the service user can read.
 
 ### Rotation semantics
 
