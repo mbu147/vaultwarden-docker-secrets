@@ -27,10 +27,10 @@ type Client struct {
 func New(host string) (*Client, error) {
 	tr := &http.Transport{}
 	base := "http://docker"
-	switch {
-	case host == "":
+	if host == "" {
 		host = "unix://" + defaultSocket
-		fallthrough
+	}
+	switch {
 	case strings.HasPrefix(host, "unix://"):
 		sock := strings.TrimPrefix(host, "unix://")
 		tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -110,65 +110,4 @@ func (c *Client) ListContainers(ctx context.Context, label string) ([]Container,
 // RestartContainer restarts a container by ID or name.
 func (c *Client) RestartContainer(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/restart", nil, nil, nil)
-}
-
-// KillContainer sends a signal to a container by ID or name.
-func (c *Client) KillContainer(ctx context.Context, id, signal string) error {
-	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/kill",
-		url.Values{"signal": {signal}}, nil, nil)
-}
-
-// Secret is a Swarm secret (metadata only).
-type Secret struct {
-	ID        string `json:"ID"`
-	CreatedAt string `json:"CreatedAt"`
-	Spec      struct {
-		Name   string            `json:"Name"`
-		Labels map[string]string `json:"Labels"`
-	} `json:"Spec"`
-}
-
-// ListSecrets returns Swarm secrets matching a label filter.
-func (c *Client) ListSecrets(ctx context.Context, label string) ([]Secret, error) {
-	f, _ := json.Marshal(map[string][]string{"label": {label}})
-	var out []Secret
-	err := c.do(ctx, http.MethodGet, "/secrets", url.Values{"filters": {string(f)}}, nil, &out)
-	return out, err
-}
-
-// CreateSecret creates a Swarm secret and returns its ID.
-func (c *Client) CreateSecret(ctx context.Context, name string, labels map[string]string, data []byte) (string, error) {
-	body := map[string]any{"Name": name, "Labels": labels, "Data": data}
-	var out struct {
-		ID string `json:"ID"`
-	}
-	err := c.do(ctx, http.MethodPost, "/secrets/create", nil, body, &out)
-	return out.ID, err
-}
-
-// DeleteSecret removes a Swarm secret.
-func (c *Client) DeleteSecret(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodDelete, "/secrets/"+url.PathEscape(id), nil, nil, nil)
-}
-
-// Service holds a Swarm service with its raw spec so it can be round-tripped.
-type Service struct {
-	ID      string `json:"ID"`
-	Version struct {
-		Index uint64 `json:"Index"`
-	} `json:"Version"`
-	Spec map[string]any `json:"Spec"`
-}
-
-// ListServices returns all Swarm services including their specs.
-func (c *Client) ListServices(ctx context.Context) ([]Service, error) {
-	var out []Service
-	err := c.do(ctx, http.MethodGet, "/services", nil, nil, &out)
-	return out, err
-}
-
-// UpdateService posts a modified spec for a service.
-func (c *Client) UpdateService(ctx context.Context, s Service) error {
-	q := url.Values{"version": {fmt.Sprint(s.Version.Index)}}
-	return c.do(ctx, http.MethodPost, "/services/"+url.PathEscape(s.ID)+"/update", q, s.Spec, nil)
 }

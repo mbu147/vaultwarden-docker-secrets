@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbu147/vaultwarden-docker-secrets/internal/backend"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/bw"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/config"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/docker"
@@ -90,21 +89,17 @@ func run(cfgPath string, once, health bool) error {
 		client.Close(c)
 	}()
 
-	backends := map[string]backend.Backend{
-		config.BackendFile: &backend.File{Dir: cfg.SecretDir},
-	}
 	var containers syncer.Containers
-	if needsDocker(cfg) {
+	if dockerAvailable(cfg) {
 		dc, err := docker.New(cfg.Docker.Host)
 		if err != nil {
 			return err
 		}
 		containers = dc
-		backends[config.BackendSwarm] = &backend.Swarm{Docker: dc}
 	}
 
-	s := syncer.New(cfg, client, backends, containers)
-	slog.Info("secret-sync started", "version", version, "secrets", len(cfg.Secrets), "interval", cfg.Interval)
+	s := syncer.New(cfg, client, containers)
+	slog.Info("secret-sync started", "version", version, "interval", cfg.Interval, "restarts", containers != nil)
 
 	if once {
 		return s.SyncOnce(ctx)
@@ -125,14 +120,14 @@ func run(cfgPath string, once, health bool) error {
 	return nil
 }
 
-// needsDocker reports whether any secret uses the swarm backend or an action.
-func needsDocker(cfg *config.Config) bool {
-	for _, s := range cfg.Secrets {
-		if s.Backend == config.BackendSwarm || s.OnChange.Action != config.ActionNone {
-			return true
-		}
+// dockerAvailable reports whether restarts can be attempted: a Docker host is
+// configured or the default socket is mounted.
+func dockerAvailable(cfg *config.Config) bool {
+	if cfg.Docker.Host != "" {
+		return true
 	}
-	return cfg.Discovery.Labels
+	_, err := os.Stat("/var/run/docker.sock")
+	return err == nil
 }
 
 func loadCredentials(b config.Bitwarden) (bw.Credentials, error) {

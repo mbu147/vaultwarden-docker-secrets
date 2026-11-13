@@ -1,6 +1,6 @@
 # Copilot instructions
 
-`secret-sync` is a Go service that pulls items from Vaultwarden/Bitwarden via the `bw` CLI and writes them into Docker secrets (Compose files or Swarm secrets), optionally rotating them and restarting consumers. All code, comments and docs are in **English**.
+`secret-sync` is a Go service that pulls Vaultwarden/Bitwarden items that have the custom field `sync_enabled` via the `bw` CLI and writes them as files into a shared secrets volume for Docker Compose consumers, optionally rotating them and restarting consumers. All code, comments and docs are in **English**.
 
 ## Build, test, lint
 
@@ -18,28 +18,28 @@ CI (`.github/workflows/ci.yml`) requires `gofmt -l .` to print nothing, plus `go
 
 ## Architecture
 
-Flow: `cmd/secret-sync/main.go` wires everything → `internal/syncer` runs a loop (interval ticker + webhook trigger) → each run calls `bw.Client.Fetch` (one `bw sync` + `list items/folders/collections`, decrypted snapshot) → for every configured secret resolves the value (`Vault.Resolve`), compares the SHA-256 with the backend's current value, and writes/rotates.
+Flow: `cmd/secret-sync/main.go` wires everything → `internal/syncer` runs a loop (interval ticker + webhook trigger) → each run calls `bw.Client.Fetch` (`bw sync` + `list items`, decrypted snapshot) → `Vault.Synced` selects items whose custom field `sync_enabled` is truthy → every file of every item is compared by SHA-256 with the file on disk and written/rotated.
 
-- `internal/config`: YAML parsing with strict keys (`KnownFields`) plus defaults/validation. Rotation default resolution lives in `Config.RotateEnabled` (per-secret overrides global, default true).
-- `internal/bw`: wraps the `bw` CLI as a subprocess. Credentials are passed only through the subprocess env; the app data dir is a temp dir.
-- `internal/backend`: `Backend` interface (`Current` hash + `Write`). `File` for Compose, `Swarm` for Swarm.
-- `internal/docker`: stdlib-only Docker Engine API client (unix socket or tcp, e.g. a socket proxy). Do not add the Docker SDK unless necessary.
-- `internal/syncer`: orchestration, rotation actions (restart/signal), webhook (`POST /sync`, `GET /healthz`).
+- `internal/config`: YAML (optional, strict keys) plus env overrides (`applyEnv`) and defaults/validation.
+- `internal/bw`: wraps the `bw` CLI as a subprocess (credentials only via the subprocess env; temp app data dir) and maps items to `SyncedItem`s (layout, sanitizing, collisions).
+- `internal/backend`: `File` writes files below `secret_dir`.
+- `internal/docker`: stdlib-only Docker Engine API client (unix socket or tcp). Used only to list/restart containers. Do not add the Docker SDK unless necessary.
+- `internal/syncer`: orchestration, restarts, pruning (`prune.go`), webhook (`POST /sync`, `GET /healthz`).
 
 ## Behavior that is easy to break
 
+- **Layout**: `<secret_dir>/[<group>/]<sanitized item name>/<file>`; files `password`, `username`, `notes`, `uri` plus one per custom field. `sync_enabled` and `group` are control fields and never written. Empty values are skipped; name collisions are errors and skip the item.
 - **File backend rewrites in place** (truncate + write, same inode, chmod around it). Compose bind-mounts secret files directly, so rename-based atomic writes would leave containers on the old file. `TestFileWriteKeepsInode` guards this.
-- **Swarm secrets are immutable**: a change creates `<name>_v<hash8>` with labels `secret-sync.name` / `secret-sync.hash`, rewrites `SecretID`/`SecretName` in every service spec that references older versions (the in-container `File.Name` is kept), then deletes old versions. The Swarm backend updates services itself, so `on_change` actions are skipped for it (`runAction`).
-- **Rotation semantics**: a secret that does not exist yet is just created and never triggers actions. With `rotate: false`, an existing secret is kept and only a warning is logged.
-- Rotation targets = `on_change.containers` plus running containers labeled `secret-sync.restart=<secret>[,<secret>]`.
-- Label discovery (`internal/syncer/discovery.go`, opt-in via `discovery.labels`) turns `secret-sync.<name>.<key>` labels into file secrets on every run; the label's container becomes the rotation target. Config-file secrets win, conflicting declarations are rejected, and per-secret validation is shared via `config.NormalizeSecret`.
-- Never log secret values; log only name and first 8 chars of the hash.
-- The healthcheck (`-healthcheck`) only checks for the ready file, which is written after the first fully successful sync.
-- The Docker client is created only if a secret uses the swarm backend or an `on_change` action (`needsDocker` in `main.go`).
+- **Rotation**: a file that does not exist yet is just created and never triggers a restart. With `rotate: false`, an existing file is kept and only a warning is logged.
+- **Restart targets**: containers labeled `secret-sync.restart=<group>|<group>/<item>|<item>[,...]`; a changed file produces the targets `group`, `group/item` (or just `item` without group).
+- **Pruning**: `.secret-sync-managed` in `secret_dir` lists written files. Stale files are removed only on a run without errors; foreign files are never touched.
+- Never log secret values; log only the file name and first 8 chars of the hash.
+- The healthcheck (`-healthcheck`) only checks for the ready file, written after a fully successful sync.
+- The Docker client is created only if `DOCKER_HOST`/`docker.host` is set or the default socket exists (`dockerAvailable` in `main.go`).
 
 ## Conventions
 
-- Tests use fakes for the vault source and Docker (`syncer_test.go`); there is no live Vaultwarden in CI. Keep new logic behind the existing interfaces (`VaultSource`, `Containers`, `Backend`) so it stays testable that way.
-- User-facing behavior changes must update `README.md` (config table, semantics) and the files in `examples/` (`config.yaml`, `compose.yaml`, `compose.swarm.yaml`).
-- Releases: pushing a tag `vX.Y.Z` triggers `.github/workflows/release.yml` (tests, multi-arch image to GHCR, GitHub Release). The binary version is injected via `-X main.version`.
-- The runtime image is `node:alpine` with `@bitwarden/cli` pinned via the `BW_VERSION` build arg in the `Dockerfile`.
+- Tests use fakes for the vault source and Docker (`syncer_test.go`); there is no live Vaultwarden in CI. Keep new logic behind the existing interfaces (`VaultSource`, `Containers`) so it stays testable that way.
+- User-facing behavior changes must update `README.md` (config table, semantics) and the files in `examples/` (`config.yaml`, `compose.yaml`).
+
+

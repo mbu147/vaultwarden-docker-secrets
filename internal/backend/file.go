@@ -1,18 +1,18 @@
+// Package backend writes secret files below the secret directory.
 package backend
 
 import (
-	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/mbu147/vaultwarden-docker-secrets/internal/config"
 )
 
-// File writes secrets as files below Dir, for Docker Compose "file:" secrets.
+// File writes secrets as files below Dir.
 //
 // Files are rewritten in place (same inode) instead of being replaced via
 // rename. Compose bind-mounts a secret file directly, and a rename would leave
@@ -21,17 +21,24 @@ type File struct {
 	Dir string
 }
 
-func (f *File) path(s config.Secret) (string, error) {
-	p := filepath.Join(f.Dir, filepath.Clean("/"+s.Path))
+// Hash returns the hex SHA-256 of a secret value.
+func Hash(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
+}
+
+func (f *File) path(rel string) (string, error) {
+	p := filepath.Join(f.Dir, filepath.Clean("/"+filepath.FromSlash(rel)))
 	if !strings.HasPrefix(p, filepath.Clean(f.Dir)) {
-		return "", fmt.Errorf("secret %q: path escapes secret_dir", s.Name)
+		return "", fmt.Errorf("path %q escapes secret_dir", rel)
 	}
 	return p, nil
 }
 
-// Current implements Backend.
-func (f *File) Current(_ context.Context, s config.Secret) (string, bool, error) {
-	p, err := f.path(s)
+// Current returns the hash of the file at rel (slash separated, relative to
+// Dir), and whether it exists.
+func (f *File) Current(rel string) (string, bool, error) {
+	p, err := f.path(rel)
 	if err != nil {
 		return "", false, err
 	}
@@ -45,9 +52,9 @@ func (f *File) Current(_ context.Context, s config.Secret) (string, bool, error)
 	return Hash(b), true, nil
 }
 
-// Write implements Backend.
-func (f *File) Write(_ context.Context, s config.Secret, value []byte) error {
-	p, err := f.path(s)
+// Write stores value at rel with the given mode, creating directories.
+func (f *File) Write(rel string, value []byte, mode os.FileMode) error {
+	p, err := f.path(rel)
 	if err != nil {
 		return err
 	}
@@ -67,5 +74,5 @@ func (f *File) Write(_ context.Context, s config.Secret, value []byte) error {
 	if err := fh.Close(); err != nil {
 		return err
 	}
-	return os.Chmod(p, s.FileMode)
+	return os.Chmod(p, mode)
 }

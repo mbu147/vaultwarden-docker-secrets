@@ -1,4 +1,5 @@
-// Package syncer ties Vaultwarden, the backends and container actions together.
+// Package syncer writes opted-in Vaultwarden items to the secret directory and
+// restarts consumers when a secret changes.
 package syncer
 
 import (
@@ -7,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,8 +20,9 @@ import (
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/docker"
 )
 
-// RestartLabel marks containers that must be restarted when the listed
-// secrets (comma-separated names) change.
+// RestartLabel marks containers that must be restarted when secrets of the
+// listed targets change. Targets are comma-separated and either a group name
+// or "<group>/<item>" (just "<item>" for items without a group).
 const RestartLabel = "secret-sync.restart"
 
 // VaultSource returns a fresh vault snapshot.
@@ -27,19 +30,18 @@ type VaultSource interface {
 	Fetch(ctx context.Context) (*bw.Vault, error)
 }
 
-// Containers is the subset of the Docker API used for rotation actions.
+// Containers is the subset of the Docker API used for restarts.
 type Containers interface {
 	ListContainers(ctx context.Context, label string) ([]docker.Container, error)
 	RestartContainer(ctx context.Context, id string) error
-	KillContainer(ctx context.Context, id, signal string) error
 }
 
 // Syncer performs synchronization runs.
 type Syncer struct {
 	Cfg        *config.Config
 	Vault      VaultSource
-	Backends   map[string]backend.Backend
-	Containers Containers // may be nil if no actions are configured
+	Files      *backend.File
+	Containers Containers // may be nil if Docker is not available
 
 	trigger chan struct{}
 	healthy atomic.Bool
@@ -47,8 +49,9 @@ type Syncer struct {
 }
 
 // New creates a Syncer.
-func New(cfg *config.Config, v VaultSource, b map[string]backend.Backend, c Containers) *Syncer {
-	return &Syncer{Cfg: cfg, Vault: v, Backends: b, Containers: c, trigger: make(chan struct{}, 1)}
+func New(cfg *config.Config, v VaultSource, c Containers) *Syncer {
+	return &Syncer{Cfg: cfg, Vault: v, Files: &backend.File{Dir: cfg.SecretDir}, Containers: c,
+		trigger: make(chan struct{}, 1)}
 }
 
 // Healthy reports whether the last run succeeded.
@@ -67,19 +70,15 @@ func (s *Syncer) Run(ctx context.Context) {
 	ticker := time.NewTicker(s.Cfg.Interval)
 	defer ticker.Stop()
 	for {
-		s.runLogged(ctx)
+		if err := s.SyncOnce(ctx); err != nil {
+			slog.Error("sync finished with errors", "error", err)
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		case <-s.trigger:
 		}
-	}
-}
-
-func (s *Syncer) runLogged(ctx context.Context) {
-	if err := s.SyncOnce(ctx); err != nil {
-		slog.Error("sync finished with errors", "error", err)
 	}
 }
 
@@ -93,179 +92,138 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		s.healthy.Store(false)
 		return fmt.Errorf("fetch vault: %w", err)
 	}
+	items, errs := vault.Synced()
 
-	secrets := make([]origSecret, 0, len(s.Cfg.Secrets))
-	for _, sec := range s.Cfg.Secrets {
-		secrets = append(secrets, origSecret{sec, originConfig})
-	}
-	var errs []error
-	discoveryOK := true
-	discovered := map[string]bool{}
-	if s.Cfg.Discovery.Labels && s.Containers != nil {
-		found, derrs, err := s.discover(ctx)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("label discovery: %w", err))
-			discoveryOK = false
-		}
-		if len(derrs) > 0 {
-			discoveryOK = false
-		}
-		errs = append(errs, derrs...)
-		for _, sec := range found {
-			discovered[sec.Name] = true
-			secrets = append(secrets, origSecret{sec, originLabel})
+	var keep []string
+	targets := map[string]bool{}
+	for _, it := range items {
+		for _, f := range it.Files {
+			rel := it.RelPath(f.Name)
+			keep = append(keep, rel)
+			changed, err := s.syncFile(rel, f.Value)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", rel, err))
+			}
+			if changed {
+				if it.Group != "" {
+					targets[it.Group] = true
+					targets[it.Group+"/"+it.Dir] = true
+				} else {
+					targets[it.Dir] = true
+				}
+			}
 		}
 	}
 
-	var keep []managedFile
-	for _, o := range secrets {
-		sec := s.withGroup(vault, o.Secret)
-		err := s.syncSecret(ctx, vault, sec)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("secret %q: %w", sec.Name, err))
-		}
-		// Only a definitive "item not found" makes a file stale; any other
-		// error keeps the existing file.
-		if sec.Backend == config.BackendFile && !errors.Is(err, bw.ErrNotFound) {
-			keep = append(keep, managedFile{Origin: o.origin, Name: sec.Name, Path: sec.Path})
-		}
-	}
+	// Pruning only runs on a clean pass, so a transient problem or a naming
+	// conflict never deletes files.
 	if s.Cfg.PruneEnabled() {
-		s.prune(keep, discovered, discoveryOK)
+		if len(errs) > 0 {
+			slog.Warn("not removing stale files because of errors in this run")
+		}
+		s.prune(keep, len(errs) == 0)
 	}
-	err = errors.Join(errs...)
-	s.healthy.Store(err == nil)
-	if err == nil {
-		s.markReady()
+
+	if len(targets) > 0 {
+		if err := s.restart(ctx, targets); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return err
+
+	if err := s.markReady(len(errs) == 0); err != nil {
+		errs = append(errs, err)
+	}
+	s.healthy.Store(len(errs) == 0)
+	slog.Info("sync finished", "items", len(items), "errors", len(errs))
+	return errors.Join(errs...)
 }
 
-func (s *Syncer) discover(ctx context.Context) ([]config.Secret, []error, error) {
-	containers, err := s.Containers.ListContainers(ctx, "")
+// syncFile writes value to rel. It reports true when an existing file was
+// changed (a new file never counts as a rotation).
+func (s *Syncer) syncFile(rel string, value []byte) (bool, error) {
+	cur, exists, err := s.Files.Current(rel)
 	if err != nil {
-		return nil, nil, err
-	}
-	configured := map[string]bool{}
-	for _, sec := range s.Cfg.Secrets {
-		configured[sec.Name] = true
-	}
-	found, errs := discoverSecrets(containers, configured)
-	return found, errs, nil
-}
-
-func (s *Syncer) markReady() {
-	if s.Cfg.ReadyFile == "" {
-		return
-	}
-	if err := os.WriteFile(s.Cfg.ReadyFile, []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {
-		slog.Warn("could not write ready file", "error", err)
-	}
-}
-
-// withGroup moves a file secret into <group>/ when its Vaultwarden item has a
-// non-empty custom field "group". Without the field (or with an empty one) the
-// secret is unchanged. Rotation targets and labels are not affected.
-func (s *Syncer) withGroup(vault *bw.Vault, sec config.Secret) config.Secret {
-	if sec.Backend != config.BackendFile {
-		return sec
-	}
-	// Lookup errors surface in syncSecret.
-	if g, err := vault.Group(sec.Source.Item, sec.Source.Folder, sec.Source.Collection); err == nil && g != "" {
-		sec.Path = g + "/" + sec.Path
-	}
-	return sec
-}
-
-func (s *Syncer) syncSecret(ctx context.Context, vault *bw.Vault, sec config.Secret) error {
-	be, ok := s.Backends[sec.Backend]
-	if !ok {
-		return fmt.Errorf("backend %q is not available", sec.Backend)
-	}
-	value, err := vault.Resolve(sec.Source.Item, sec.Source.Folder, sec.Source.Collection, sec.Source.Field)
-	if err != nil {
-		return err
+		return false, err
 	}
 	hash := backend.Hash(value)
-
-	current, exists, err := be.Current(ctx, sec)
-	if err != nil {
-		return fmt.Errorf("read current value: %w", err)
+	if exists && cur == hash {
+		return false, nil
 	}
-	if exists && current == hash {
-		return nil
+	if exists && !s.Cfg.RotateEnabled() {
+		slog.Warn("secret changed in vault but rotation is disabled; keeping existing file",
+			"file", rel, "hash", short(hash))
+		return false, nil
 	}
-	if exists && !s.Cfg.RotateEnabled(sec) {
-		slog.Warn("value changed in vault but rotation is disabled; keeping existing value",
-			"secret", sec.Name)
-		return nil
+	if err := s.Files.Write(rel, value, s.Cfg.Mode); err != nil {
+		return false, err
 	}
-
-	if err := be.Write(ctx, sec, value); err != nil {
-		return fmt.Errorf("write: %w", err)
+	if exists {
+		slog.Info("secret rotated", "file", rel, "hash", short(hash))
+	} else {
+		slog.Info("secret created", "file", rel, "hash", short(hash))
 	}
-	slog.Info("secret written", "secret", sec.Name, "backend", sec.Backend,
-		"rotated", exists, "hash", hash[:8])
-
-	// A newly created secret has no consumers that could be using an old value.
-	if !exists {
-		return nil
-	}
-	return s.runAction(ctx, sec)
+	return exists, nil
 }
 
-func (s *Syncer) runAction(ctx context.Context, sec config.Secret) error {
-	// Swarm services are updated by the backend itself.
-	if sec.Backend == config.BackendSwarm || sec.OnChange.Action == config.ActionNone {
+func (s *Syncer) restart(ctx context.Context, targets map[string]bool) error {
+	if s.Containers == nil {
+		slog.Warn("secrets rotated but Docker is not available; cannot restart consumers")
 		return nil
 	}
-	if s.Containers == nil {
-		return errors.New("on_change action configured but Docker API is not available")
-	}
-	targets, err := s.targets(ctx, sec)
+	list, err := s.Containers.ListContainers(ctx, RestartLabel)
 	if err != nil {
-		return err
+		return fmt.Errorf("list containers: %w", err)
 	}
 	var errs []error
-	for _, id := range targets {
-		switch sec.OnChange.Action {
-		case config.ActionRestart:
-			err = s.Containers.RestartContainer(ctx, id)
-		case config.ActionSignal:
-			err = s.Containers.KillContainer(ctx, id, sec.OnChange.Signal)
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s %s: %w", sec.OnChange.Action, id, err))
+	for _, c := range list {
+		if !matches(c.Labels[RestartLabel], targets) {
 			continue
 		}
-		slog.Info("rotation action applied", "secret", sec.Name, "action", sec.OnChange.Action, "container", id)
+		name := strings.TrimPrefix(first(c.Names), "/")
+		if err := s.Containers.RestartContainer(ctx, c.ID); err != nil {
+			errs = append(errs, fmt.Errorf("restart %s: %w", name, err))
+			continue
+		}
+		slog.Info("container restarted", "container", name)
 	}
 	return errors.Join(errs...)
 }
 
-// targets merges containers named in the config with those labeled for the secret.
-func (s *Syncer) targets(ctx context.Context, sec config.Secret) ([]string, error) {
-	seen := map[string]bool{}
-	var out []string
-	add := func(id string) {
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, id)
+func matches(label string, targets map[string]bool) bool {
+	for _, t := range strings.Split(label, ",") {
+		if targets[strings.TrimSpace(t)] {
+			return true
 		}
 	}
-	for _, c := range sec.OnChange.Containers {
-		add(c)
+	return false
+}
+
+func first(s []string) string {
+	if len(s) > 0 {
+		return s[0]
 	}
-	labeled, err := s.Containers.ListContainers(ctx, RestartLabel)
-	if err != nil {
-		return nil, err
+	return ""
+}
+
+func short(hash string) string {
+	if len(hash) > 8 {
+		return hash[:8]
 	}
-	for _, c := range labeled {
-		for _, n := range strings.Split(c.Labels[RestartLabel], ",") {
-			if strings.TrimSpace(n) == sec.Name {
-				add(c.ID)
-			}
-		}
+	return hash
+}
+
+func (s *Syncer) markReady(ok bool) error {
+	if !ok || s.Cfg.ReadyFile == "" {
+		return nil
 	}
-	return out, nil
+	return os.WriteFile(s.Cfg.ReadyFile, []byte(time.Now().UTC().Format(time.RFC3339)), 0o644)
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

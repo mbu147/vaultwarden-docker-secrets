@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,43 +13,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Action names supported in on_change.
-const (
-	ActionNone    = "none"
-	ActionRestart = "restart"
-	ActionSignal  = "signal"
-)
-
-// Backend names.
-const (
-	BackendFile  = "file"
-	BackendSwarm = "swarm"
-)
-
-var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-
-// Config is the root configuration document.
+// Config is the root configuration document. Every setting has a default and
+// can be set through an environment variable, so the file is optional.
 type Config struct {
 	Bitwarden Bitwarden     `yaml:"bitwarden"`
 	Interval  time.Duration `yaml:"interval"`
-	// Rotate is the default for secrets that do not set rotate explicitly.
+	// Rotate controls whether an existing secret is updated when its value
+	// changes in the vault. Default true.
 	Rotate *bool `yaml:"rotate"`
 	// Prune removes files secret-sync wrote earlier but no longer produces
-	// (item deleted in the vault, group changed, secret removed). Default true.
-	Prune     *bool     `yaml:"prune"`
-	SecretDir string    `yaml:"secret_dir"`
-	ReadyFile string    `yaml:"ready_file"`
-	Webhook   Webhook   `yaml:"webhook"`
-	Docker    Docker    `yaml:"docker"`
-	Discovery Discovery `yaml:"discovery"`
-	Secrets   []Secret  `yaml:"secrets"`
-}
+	// (item deleted, sync_enabled removed, group changed). Default true.
+	Prune     *bool   `yaml:"prune"`
+	SecretDir string  `yaml:"secret_dir"`
+	ReadyFile string  `yaml:"ready_file"`
+	FileMode  string  `yaml:"file_mode"`
+	Webhook   Webhook `yaml:"webhook"`
+	Docker    Docker  `yaml:"docker"`
 
-// Discovery configures secrets that are declared with container labels.
-type Discovery struct {
-	// Labels enables reading secret definitions from container labels
-	// (secret-sync.<name>.<key>). Requires Docker API access.
-	Labels bool `yaml:"labels"`
+	// Mode is FileMode parsed (default 0444).
+	Mode os.FileMode `yaml:"-"`
 }
 
 // Bitwarden holds connection and credential settings. Credentials are read
@@ -68,41 +49,11 @@ type Webhook struct {
 	TokenFile string `yaml:"token_file"`
 }
 
-// Docker configures access to the Docker Engine API.
+// Docker configures access to the Docker Engine API (used to restart
+// containers after a rotation).
 type Docker struct {
 	// Host is unix:///path or tcp://host:port. Empty means the default socket.
 	Host string `yaml:"host"`
-}
-
-// Secret maps one Vaultwarden value to one Docker secret.
-type Secret struct {
-	Name     string   `yaml:"name"`
-	Source   Source   `yaml:"source"`
-	Backend  string   `yaml:"backend"`
-	Path     string   `yaml:"path"`
-	Mode     string   `yaml:"mode"`
-	Rotate   *bool    `yaml:"rotate"`
-	OnChange OnChange `yaml:"on_change"`
-
-	FileMode os.FileMode `yaml:"-"`
-}
-
-// Source selects a value in Vaultwarden.
-type Source struct {
-	// Item is the item name or ID.
-	Item string `yaml:"item"`
-	// Folder and Collection optionally narrow the item lookup by name.
-	Folder     string `yaml:"folder"`
-	Collection string `yaml:"collection"`
-	// Field is password (default), username, notes, uri or custom:<name>.
-	Field string `yaml:"field"`
-}
-
-// OnChange describes what to do with consumers after a rotation.
-type OnChange struct {
-	Action     string   `yaml:"action"`
-	Containers []string `yaml:"containers"`
-	Signal     string   `yaml:"signal"`
 }
 
 // PruneEnabled reports whether stale files are removed (default true).
@@ -110,15 +61,9 @@ func (c *Config) PruneEnabled() bool {
 	return c.Prune == nil || *c.Prune
 }
 
-// RotateEnabled reports whether the secret may be updated after creation.
-func (c *Config) RotateEnabled(s Secret) bool {
-	if s.Rotate != nil {
-		return *s.Rotate
-	}
-	if c.Rotate != nil {
-		return *c.Rotate
-	}
-	return true
+// RotateEnabled reports whether existing secrets may be updated (default true).
+func (c *Config) RotateEnabled() bool {
+	return c.Rotate == nil || *c.Rotate
 }
 
 // Load reads the optional configuration file, applies environment variable
@@ -157,16 +102,17 @@ func (c *Config) applyEnv(get func(string) string) error {
 			*dst = v
 		}
 	}
-	boolean := func(key string) (*bool, error) {
+	boolean := func(dst **bool, key string) error {
 		v := get(key)
 		if v == "" {
-			return nil, nil
+			return nil
 		}
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return nil, fmt.Errorf("%s: invalid boolean %q", key, v)
+			return fmt.Errorf("%s: invalid boolean %q", key, v)
 		}
-		return &b, nil
+		*dst = &b
+		return nil
 	}
 
 	str(&c.Bitwarden.Server, "BW_SERVER")
@@ -175,6 +121,7 @@ func (c *Config) applyEnv(get func(string) string) error {
 	str(&c.Bitwarden.PasswordFile, "BW_PASSWORD_FILE")
 	str(&c.SecretDir, "SECRET_SYNC_SECRET_DIR")
 	str(&c.ReadyFile, "SECRET_SYNC_READY_FILE")
+	str(&c.FileMode, "SECRET_SYNC_FILE_MODE")
 	str(&c.Webhook.Listen, "SECRET_SYNC_WEBHOOK_LISTEN")
 	str(&c.Webhook.TokenFile, "SECRET_SYNC_WEBHOOK_TOKEN_FILE")
 	str(&c.Docker.Host, "DOCKER_HOST")
@@ -186,28 +133,10 @@ func (c *Config) applyEnv(get func(string) string) error {
 		}
 		c.Interval = d
 	}
-	b, err := boolean("SECRET_SYNC_ROTATE")
-	if err != nil {
+	if err := boolean(&c.Rotate, "SECRET_SYNC_ROTATE"); err != nil {
 		return err
 	}
-	if b != nil {
-		c.Rotate = b
-	}
-	b, err = boolean("SECRET_SYNC_PRUNE")
-	if err != nil {
-		return err
-	}
-	if b != nil {
-		c.Prune = b
-	}
-	b, err = boolean("SECRET_SYNC_DISCOVERY_LABELS")
-	if err != nil {
-		return err
-	}
-	if b != nil {
-		c.Discovery.Labels = *b
-	}
-	return nil
+	return boolean(&c.Prune, "SECRET_SYNC_PRUNE")
 }
 
 func (c *Config) applyDefaults() error {
@@ -226,69 +155,13 @@ func (c *Config) applyDefaults() error {
 	if c.Webhook.Listen != "" && c.Webhook.TokenFile == "" {
 		return fmt.Errorf("webhook.token_file is required when webhook.listen is set")
 	}
-	if len(c.Secrets) == 0 && !c.Discovery.Labels {
-		return fmt.Errorf("no secrets configured (add secrets: entries or enable discovery.labels)")
-	}
-
-	seen := map[string]bool{}
-	for i := range c.Secrets {
-		s := &c.Secrets[i]
-		if seen[s.Name] {
-			return fmt.Errorf("secrets[%d]: duplicate name %q", i, s.Name)
-		}
-		seen[s.Name] = true
-		if err := NormalizeSecret(s); err != nil {
-			return fmt.Errorf("secrets[%d]: %w", i, err)
-		}
-	}
-	return nil
-}
-
-// NormalizeSecret applies defaults to a secret and validates it. It is used
-// for secrets from the config file and for secrets discovered from labels.
-func NormalizeSecret(s *Secret) error {
-	if !nameRe.MatchString(s.Name) {
-		return fmt.Errorf("invalid name %q", s.Name)
-	}
-	if s.Source.Item == "" {
-		return fmt.Errorf("secret %q: source.item is required", s.Name)
-	}
-	if s.Source.Field == "" {
-		s.Source.Field = "password"
-	}
-	if s.Backend == "" {
-		s.Backend = BackendFile
-	}
-	switch s.Backend {
-	case BackendFile:
-		if s.Path == "" {
-			s.Path = s.Name
-		}
-	case BackendSwarm:
-	default:
-		return fmt.Errorf("secret %q: unknown backend %q", s.Name, s.Backend)
-	}
-
-	s.FileMode = 0o444
-	if s.Mode != "" {
-		m, err := strconv.ParseUint(s.Mode, 8, 32)
+	c.Mode = 0o444
+	if c.FileMode != "" {
+		m, err := strconv.ParseUint(c.FileMode, 8, 32)
 		if err != nil {
-			return fmt.Errorf("secret %q: invalid mode %q", s.Name, s.Mode)
+			return fmt.Errorf("invalid file_mode %q", c.FileMode)
 		}
-		s.FileMode = os.FileMode(m)
-	}
-
-	if s.OnChange.Action == "" {
-		s.OnChange.Action = ActionNone
-	}
-	switch s.OnChange.Action {
-	case ActionNone, ActionRestart:
-	case ActionSignal:
-		if s.OnChange.Signal == "" {
-			s.OnChange.Signal = "SIGHUP"
-		}
-	default:
-		return fmt.Errorf("secret %q: unknown on_change.action %q", s.Name, s.OnChange.Action)
+		c.Mode = os.FileMode(m)
 	}
 	return nil
 }

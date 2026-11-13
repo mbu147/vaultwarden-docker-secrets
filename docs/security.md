@@ -6,8 +6,10 @@ containers' secrets, so treat it as a high-value component.
 ## Vaultwarden side
 
 - Create a **dedicated user** for secret-sync. Do not use a personal account.
-- Share only the needed items through an **organization collection** with
-  read-only access. The tool only ever reads.
+- Only items with the custom field `sync_enabled = true` are written, so the
+  service user may see more items than are exposed. Still share only the needed
+  items through an **organization collection** with read-only access. The tool
+  only ever reads.
 - Protect the master password and API key like any other root credential.
 
 ## Credentials
@@ -23,8 +25,8 @@ containers' secrets, so treat it as a high-value component.
 
 ## Docker access
 
-- The Docker socket is only needed for restart/signal actions and the swarm
-  backend, and is only used when configured.
+- The Docker socket is only needed to restart labeled containers after a
+  rotation, and is only used then.
 - Access the Docker API through
   [socket-proxy](https://github.com/wollomatic/socket-proxy) and
   grant only what you need (see [examples/compose.yaml](../examples/compose.yaml)).
@@ -36,8 +38,9 @@ containers' secrets, so treat it as a high-value component.
 - Put the shared secrets volume on tmpfs so values are never written to disk.
 - Default file mode is `0444` because consumers usually run as a different user
   than secret-sync. Keep the shared secrets volume on tmpfs and mount it only
-  into the consumers that need it. Set `mode: "0400"` per secret for stricter
-  access if the consumer runs as the same user.
+  into the consumers that need it, ideally with `subpath: <group>` so each
+  consumer sees only its group. Set `file_mode: "0400"` for stricter access if
+  the consumer runs as the same user.
 - The webhook requires a bearer token. Bind it to an internal network or
   localhost and put TLS in front if it is reachable from outside.
 

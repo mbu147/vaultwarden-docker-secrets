@@ -1,4 +1,4 @@
-// Package bw wraps the Bitwarden CLI and resolves values from vault items.
+// Package bw wraps the Bitwarden CLI and turns vault items into secret files.
 package bw
 
 import (
@@ -9,21 +9,25 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 )
 
-// ErrNotFound is returned (wrapped) when no item matches a selector.
-var ErrNotFound = errors.New("not found")
+// Control fields. Both are custom fields on the vault item.
+const (
+	// SyncField opts an item in: only items where it is true are synced.
+	SyncField = "sync_enabled"
+	// GroupField optionally places the item below a subdirectory.
+	GroupField = "group"
+)
 
 // Item is the subset of a Bitwarden item that secret-sync needs.
 type Item struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	FolderID      string   `json:"folderId"`
-	CollectionIDs []string `json:"collectionIds"`
-	Notes         string   `json:"notes"`
-	Login         *struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Notes string `json:"notes"`
+	Login *struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		URIs     []struct {
@@ -36,16 +40,133 @@ type Item struct {
 	} `json:"fields"`
 }
 
-type named struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+// Vault is a decrypted snapshot of the vault items.
+type Vault struct {
+	Items []Item
 }
 
-// Vault is a decrypted snapshot of the data needed to resolve secrets.
-type Vault struct {
-	Items       []Item
-	Folders     map[string]string // id -> name
-	Collections map[string]string // id -> name
+// File is one secret file of an item.
+type File struct {
+	Name  string // file name inside the item directory
+	Value []byte
+}
+
+// SyncedItem is an opted-in item, ready to be written as a directory.
+type SyncedItem struct {
+	Group string // optional subdirectory
+	Dir   string // sanitized item name
+	Files []File
+}
+
+// RelPath returns the slash separated path of a file below the secret dir.
+func (s SyncedItem) RelPath(file string) string {
+	if s.Group == "" {
+		return s.Dir + "/" + file
+	}
+	return s.Group + "/" + s.Dir + "/" + file
+}
+
+var unsafeRe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+// Sanitize turns a vault name into a safe file or directory name: unsafe
+// character runs become "_" and leading dots are replaced.
+func Sanitize(name string) string {
+	s := unsafeRe.ReplaceAllString(strings.TrimSpace(name), "_")
+	if t := strings.TrimLeft(s, "."); t != s {
+		s = strings.Repeat("_", len(s)-len(t)) + t
+	}
+	return s
+}
+
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
+}
+
+func (it Item) field(name string) (string, bool) {
+	for _, f := range it.Fields {
+		if f.Name == name {
+			return f.Value, true
+		}
+	}
+	return "", false
+}
+
+// Synced returns all items with sync_enabled set, converted to secret files.
+// Items that cannot be mapped (invalid group, empty or duplicate names) are
+// skipped and reported in the returned errors.
+func (v *Vault) Synced() ([]SyncedItem, []error) {
+	var out []SyncedItem
+	var errs []error
+	owner := map[string]string{} // group/dir -> item name
+	for _, it := range v.Items {
+		if val, ok := it.field(SyncField); !ok || !truthy(val) {
+			continue
+		}
+		si, err := it.toSynced()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("item %q: %w", it.Name, err))
+			continue
+		}
+		key := si.RelPath("")
+		if other, dup := owner[key]; dup {
+			errs = append(errs, fmt.Errorf("item %q: directory %q is already used by item %q", it.Name, key, other))
+			continue
+		}
+		owner[key] = it.Name
+		out = append(out, si)
+	}
+	return out, errs
+}
+
+func (it Item) toSynced() (SyncedItem, error) {
+	si := SyncedItem{Dir: Sanitize(it.Name)}
+	if si.Dir == "" || strings.Trim(si.Dir, "_") == "" {
+		return si, errors.New("name contains no usable characters")
+	}
+	if g, ok := it.field(GroupField); ok {
+		g = strings.TrimSpace(g)
+		if g == "." || g == ".." || strings.ContainsAny(g, `/\`) {
+			return si, fmt.Errorf("invalid group %q", g)
+		}
+		si.Group = g
+	}
+
+	add := func(name, value string) {
+		if value != "" {
+			si.Files = append(si.Files, File{Name: name, Value: []byte(value)})
+		}
+	}
+	add("notes", it.Notes)
+	if it.Login != nil {
+		add("password", it.Login.Password)
+		add("username", it.Login.Username)
+		if len(it.Login.URIs) > 0 {
+			add("uri", it.Login.URIs[0].URI)
+		}
+	}
+	used := map[string]bool{}
+	for _, f := range si.Files {
+		used[f.Name] = true
+	}
+	for _, f := range it.Fields {
+		if f.Name == SyncField || f.Name == GroupField || f.Value == "" {
+			continue
+		}
+		name := Sanitize(f.Name)
+		if name == "" {
+			return si, fmt.Errorf("custom field %q has no usable name", f.Name)
+		}
+		if used[name] {
+			return si, fmt.Errorf("custom field %q collides with another file %q", f.Name, name)
+		}
+		used[name] = true
+		add(name, f.Value)
+	}
+	return si, nil
 }
 
 // Credentials used to log in and unlock the vault.
@@ -149,137 +270,13 @@ func (c *Client) fetch(ctx context.Context) (*Vault, error) {
 	if _, err := c.run(ctx, env, "sync"); err != nil {
 		return nil, err
 	}
-	v := &Vault{Folders: map[string]string{}, Collections: map[string]string{}}
-
 	out, err := c.run(ctx, env, "list", "items")
 	if err != nil {
 		return nil, err
 	}
+	v := &Vault{}
 	if err := json.Unmarshal([]byte(out), &v.Items); err != nil {
 		return nil, fmt.Errorf("decode items: %w", err)
 	}
-	for _, kind := range []string{"folders", "collections"} {
-		out, err := c.run(ctx, env, "list", kind)
-		if err != nil {
-			return nil, err
-		}
-		var list []named
-		if err := json.Unmarshal([]byte(out), &list); err != nil {
-			return nil, fmt.Errorf("decode %s: %w", kind, err)
-		}
-		m := v.Folders
-		if kind == "collections" {
-			m = v.Collections
-		}
-		for _, n := range list {
-			m[n.ID] = n.Name
-		}
-	}
 	return v, nil
-}
-
-// Resolve finds exactly one item matching the selector and extracts a field.
-func (v *Vault) Resolve(item, folder, collection, field string) ([]byte, error) {
-	it, err := v.find(item, folder, collection)
-	if err != nil {
-		return nil, err
-	}
-	return extract(it, field)
-}
-
-// GroupField is the optional custom field that places an item's secrets in a
-// subdirectory (group) of the secret directory.
-const GroupField = "group"
-
-// Group returns the value of the custom field "group" of the item. It is empty
-// if the field is absent or blank.
-func (v *Vault) Group(item, folder, collection string) (string, error) {
-	it, err := v.find(item, folder, collection)
-	if err != nil {
-		return "", err
-	}
-	for _, f := range it.Fields {
-		if f.Name != GroupField {
-			continue
-		}
-		g := strings.TrimSpace(f.Value)
-		if g == "." || g == ".." || strings.ContainsAny(g, `/\`) {
-			return "", fmt.Errorf("item %q: invalid group %q in field %q", it.Name, g, GroupField)
-		}
-		return g, nil
-	}
-	return "", nil
-}
-
-func (v *Vault) find(item, folder, collection string) (Item, error) {
-	var matches []Item
-	for _, it := range v.Items {
-		if it.ID != item && it.Name != item {
-			continue
-		}
-		if folder != "" && v.Folders[it.FolderID] != folder {
-			continue
-		}
-		if collection != "" && !v.inCollection(it, collection) {
-			continue
-		}
-		matches = append(matches, it)
-	}
-	switch len(matches) {
-	case 0:
-		return Item{}, fmt.Errorf("item %q %w", item, ErrNotFound)
-	case 1:
-	default:
-		return Item{}, fmt.Errorf("item %q is ambiguous (%d matches); use the item ID or narrow by folder/collection", item, len(matches))
-	}
-	return matches[0], nil
-}
-
-func (v *Vault) inCollection(it Item, name string) bool {
-	for _, id := range it.CollectionIDs {
-		if v.Collections[id] == name {
-			return true
-		}
-	}
-	return false
-}
-
-func extract(it Item, field string) ([]byte, error) {
-	var val string
-	switch {
-	case field == "notes":
-		val = it.Notes
-	case field == "password" || field == "username" || field == "uri":
-		if it.Login == nil {
-			return nil, fmt.Errorf("item %q has no login data", it.Name)
-		}
-		switch field {
-		case "password":
-			val = it.Login.Password
-		case "username":
-			val = it.Login.Username
-		default:
-			if len(it.Login.URIs) > 0 {
-				val = it.Login.URIs[0].URI
-			}
-		}
-	case strings.HasPrefix(field, "custom:"):
-		name := strings.TrimPrefix(field, "custom:")
-		found := false
-		for _, f := range it.Fields {
-			if f.Name == name {
-				val, found = f.Value, true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("item %q has no custom field %q", it.Name, name)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported field %q", field)
-	}
-	if val == "" {
-		return nil, fmt.Errorf("field %q of item %q is empty", field, it.Name)
-	}
-	return []byte(val), nil
 }

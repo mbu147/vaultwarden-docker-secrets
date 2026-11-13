@@ -2,61 +2,79 @@ package bw
 
 import "testing"
 
-func testVault() *Vault {
-	mk := func(id, name, folder string, cols []string, pw string) Item {
-		it := Item{ID: id, Name: name, FolderID: folder, CollectionIDs: cols, Notes: "n-" + id}
-		it.Login = &struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-			URIs     []struct {
-				URI string `json:"uri"`
-			} `json:"uris"`
-		}{Username: "u-" + id, Password: pw}
-		it.Fields = []struct {
-			Name  string `json:"name"`
-			Value string `json:"value"`
-		}{{Name: "token", Value: "t-" + id}}
-		return it
+type fld = struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+func item(name string, fields ...fld) Item {
+	it := Item{ID: name, Name: name, Notes: "note", Fields: fields}
+	it.Login = &struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		URIs     []struct {
+			URI string `json:"uri"`
+		} `json:"uris"`
+	}{Username: "user", Password: "pw"}
+	return it
+}
+
+func files(si SyncedItem) map[string]string {
+	m := map[string]string{}
+	for _, f := range si.Files {
+		m[f.Name] = string(f.Value)
 	}
-	return &Vault{
-		Items: []Item{
-			mk("1", "db", "f1", []string{"c1"}, "pw1"),
-			mk("2", "db", "f2", nil, "pw2"),
-			mk("3", "api", "", nil, ""),
-		},
-		Folders:     map[string]string{"f1": "prod", "f2": "dev"},
-		Collections: map[string]string{"c1": "team"},
+	return m
+}
+
+func TestSyncedOptIn(t *testing.T) {
+	v := &Vault{Items: []Item{
+		item("off"),
+		item("explicit-off", fld{"sync_enabled", "false"}),
+		item("My DB", fld{"sync_enabled", "true"}, fld{"group", " mariadb "}, fld{"api token", "t"}, fld{"empty", ""}),
+		item("plain", fld{"sync_enabled", "TRUE"}, fld{"group", ""}),
+	}}
+	got, errs := v.Synced()
+	if len(errs) != 0 || len(got) != 2 {
+		t.Fatalf("got %d items, errs %v", len(got), errs)
+	}
+	db := got[0]
+	if db.Group != "mariadb" || db.Dir != "My_DB" || db.RelPath("password") != "mariadb/My_DB/password" {
+		t.Fatalf("bad item: %+v", db)
+	}
+	f := files(db)
+	if f["password"] != "pw" || f["username"] != "user" || f["notes"] != "note" || f["api_token"] != "t" {
+		t.Fatalf("bad files: %v", f)
+	}
+	if _, ok := f["empty"]; ok {
+		t.Fatal("empty values must be skipped")
+	}
+	if _, ok := f["group"]; ok {
+		t.Fatal("control fields must not become files")
+	}
+	if got[1].Group != "" || got[1].RelPath("password") != "plain/password" {
+		t.Fatalf("blank group must mean no group: %+v", got[1])
 	}
 }
 
-func TestResolve(t *testing.T) {
-	v := testVault()
-	tests := []struct {
-		name                            string
-		item, folder, collection, field string
-		want                            string
-		wantErr                         bool
-	}{
-		{"by folder", "db", "prod", "", "password", "pw1", false},
-		{"by collection", "db", "", "team", "password", "pw1", false},
-		{"by id", "2", "", "", "username", "u-2", false},
-		{"notes", "2", "", "", "notes", "n-2", false},
-		{"custom", "1", "", "", "custom:token", "t-1", false},
-		{"ambiguous", "db", "", "", "password", "", true},
-		{"missing", "nope", "", "", "password", "", true},
-		{"empty value", "api", "", "", "password", "", true},
-		{"bad field", "1", "", "", "totp", "", true},
-		{"missing custom", "1", "", "", "custom:x", "", true},
+func TestSyncedErrors(t *testing.T) {
+	on := fld{"sync_enabled", "true"}
+	v := &Vault{Items: []Item{
+		item("bad", on, fld{"group", "../x"}),
+		item("a b", on),
+		item("a_b", on),
+		item("clash", on, fld{"password", "x"}),
+	}}
+	got, errs := v.Synced()
+	if len(errs) != 3 || len(got) != 1 || got[0].Dir != "a_b" && got[0].Dir != "a b" {
+		t.Fatalf("got %+v, errs %v", got, errs)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := v.Resolve(tt.item, tt.folder, tt.collection, tt.field)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
-			}
-			if string(got) != tt.want {
-				t.Fatalf("got %q, want %q", got, tt.want)
-			}
-		})
+}
+
+func TestSanitize(t *testing.T) {
+	for in, want := range map[string]string{"a b/c": "a_b_c", "..x": "__x", "ok-1.2": "ok-1.2", "ä": "_"} {
+		if got := Sanitize(in); got != want {
+			t.Errorf("Sanitize(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -2,71 +2,123 @@
 
 `secret-sync` is a small container that downloads items from
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden) / Bitwarden with the
-`bw` CLI and writes them into Docker secrets. It supports **Docker Compose**
-(files) and **Docker Swarm** (versioned Swarm secrets) and can **rotate**
-secrets automatically when they change in the vault.
+`bw` CLI and writes them as files into a shared volume that your Docker Compose
+containers mount as secrets. It can **rotate** secrets automatically when they
+change in the vault and restart the affected containers.
 
 > This is a sync sidecar, not a Kubernetes operator. On Kubernetes use the
 > [External Secrets Operator](https://external-secrets.io/) instead.
 
 ## Features
 
-- Maps vault items (by name or ID, optionally narrowed by folder/collection) to
-  secrets. Fields: `password`, `username`, `notes`, `uri`, `custom:<name>`.
-- **Backends**
-  - `file`: writes files for Compose. Files are rewritten *in place*, so
-    bind-mounted secret files stay valid for running containers.
-  - `swarm`: creates immutable, versioned secrets (`<name>_v<hash8>`), points
-    all services at the new version and removes old ones.
-- **Rotation switch** (`rotate: true|false`), globally and per secret.
-- **Rotation actions**: restart or signal containers, configured in YAML or via
-  the container label `secret-sync.restart=<secret>[,<secret>...]`.
-- **Label-based definitions** (optional): containers declare the secrets they
-  need with `secret-sync.<name>.item` labels, see
-  [Label-based secret definitions](#label-based-secret-definitions).
+- **Opt-in per item**: only items with the custom field `sync_enabled = true`
+  are synced. No per-secret configuration, no labels.
+- **Directory per item**: `password`, `username`, `notes`, `uri` and every
+  custom field become files.
+- **Optional groups** (custom field `group`) place items in a subdirectory, so
+  a consumer can mount only its own part of the volume.
+- **Rotation** (`rotate: true|false`): changed values are rewritten *in place*
+  (bind-mounted files stay valid); labeled containers are restarted.
+- **Pruning**: files disappear again when `sync_enabled` is removed, the item is
+  deleted or its group changes.
 - **Sync triggers**: polling interval plus an authenticated webhook
   (`POST /sync`) for instant updates.
-- Credentials from files (Docker secrets) or environment variables.
+- Configuration entirely through environment variables (config file optional);
+  credentials from files (Docker secrets) or environment variables.
 - Multi-arch images (amd64/arm64) published to GHCR on every version tag.
 
 ## How it works
 
 ```
-Vaultwarden --(bw CLI: sync + list items)--> secret-sync --> file backend  (Compose)
-                                                       \--> swarm backend (Swarm)
-                                                       \--> restart / signal containers
+Vaultwarden --(bw CLI: sync + list items)--> secret-sync --> /secrets/[<group>/]<item>/<file>
+                                                       \--> restart labeled containers on rotation
 ```
 
 1. Logs in with a Bitwarden **API key** and unlocks the vault with the master
    password. Session data lives only in memory and a temporary directory.
-2. On every run it syncs the vault, resolves each configured secret and
-   compares the SHA-256 of the value with the stored one.
-3. If different and rotation is enabled, it writes the new value and runs the
-   configured action. A secret that did not exist before is just created; no
-   consumers are restarted for it.
+2. On every run it syncs the vault and selects all items with
+   `sync_enabled = true`.
+3. It compares the SHA-256 of every value with the stored file. A new file is
+   created; a changed file is rewritten (if `rotate` is on) and the containers
+   labeled for it are restarted. Files that are no longer produced are removed.
+
+## Marking items in Vaultwarden
+
+Add these **custom fields** to an item (type text or boolean):
+
+| Field | Required | Meaning |
+|---|---|---|
+| `sync_enabled` | yes | `true` (also `1`, `yes`, `on`) opts the item in. Missing or anything else: the item is ignored (and its files are removed). |
+| `group` | no | Subdirectory for the item. Missing or empty: no subdirectory. No `/`, `\`, `.` or `..`. |
+
+Resulting layout (item names are sanitized: characters other than
+`A-Z a-z 0-9 . _ -` become `_`, leading dots are replaced):
+
+```
+/secrets/
+  mariadb/                 <- group (optional)
+    mariadb-root/          <- item name
+      password
+      username             <- only if not empty
+      notes
+      uri                  <- first URI
+      <custom field>       <- one file per custom field with a value
+  standalone-item/         <- item without group
+    password
+```
+
+`sync_enabled` and `group` themselves are never written. Empty values are
+skipped. Two items that map to the same directory, or a custom field that
+collides with another file name, are reported as errors and skipped; pruning is
+suspended until the conflict is resolved.
 
 ## Quick start (Compose)
 
 1. In Vaultwarden create a **dedicated user** (ideally in an organization with
-   access to only the needed collections) and get its API key
+   access to only the needed items) and get its API key
    (*Settings → Security → Keys → View API key*).
 2. Put the credentials into files outside of git, e.g. `bootstrap/bw_client_id`,
    `bw_client_secret`, `bw_password`, `sync_webhook_token`. Compose bind-mounts
    these files with their host permissions and ignores `uid`/`gid`/`mode`, while
    the container runs as UID 1000 (`node`). Make them readable for that user:
    `sudo chown 1000:1000 bootstrap/* && chmod 400 bootstrap/*` (or `chmod 444`).
-3. Configure `secret-sync` with environment variables (see below), as in
-   [examples/compose.yaml](examples/compose.yaml). For secrets that must exist
-   at container startup or need the Swarm backend, also copy
-   [examples/config.yaml](examples/config.yaml) to `config/config.yaml` and
-   adapt it.
-4. Start with [examples/compose.yaml](examples/compose.yaml). Consumers mount the
-   shared `secrets` volume read-only and wait for `service_healthy`.
+3. Start [examples/compose.yaml](examples/compose.yaml). Configuration is done
+   with environment variables (see below); [examples/config.yaml](examples/config.yaml)
+   is an optional alternative.
+4. Add `sync_enabled = true` (and optionally `group`) to your items.
+5. Mount the volume in the consumer and wait for `service_healthy`:
 
-Alternatively bind-mount a host directory as `secret_dir` and reference the
-files with Compose's top-level `secrets: <name>: file: ./secrets/<name>`. The
-file must exist before the consumer starts, so keep the `depends_on` health
-condition.
+```yaml
+services:
+  mariadb:
+    image: mariadb:11
+    depends_on:
+      secret-sync:
+        condition: service_healthy
+    volumes:
+      - type: volume
+        source: secrets
+        target: /run/secrets
+        read_only: true
+        volume:
+          subpath: mariadb         # the item's group
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb-root/password
+    labels:
+      secret-sync.restart: "mariadb"
+```
+
+`subpath` needs Compose >= 2.26 and Docker >= 26. Without a group (or without
+`subpath`) the files are at `/run/secrets/<item>/<file>`, resp.
+`/run/secrets/<group>/<item>/<file>`.
+
+## Restricting secrets to a group
+
+A shared volume exposes every file to every container that mounts it. Mounting
+`subpath: <group>` shows a consumer only its group. Several containers may share
+a group. Limits: this separates files, it is not a hard barrier. A container that
+mounts the whole volume, or anyone who can create containers or reach the Docker
+socket, can still read everything.
 
 ## Sharing the volume across Compose projects
 
@@ -76,11 +128,6 @@ name, `secret-sync` creates the volume, and consumers in any other Compose
 project attach to it:
 
 ```yaml
-services:
-  app:
-    volumes:
-      - secrets:/run/secrets:ro
-
 volumes:
   secrets:
     external: true
@@ -88,70 +135,57 @@ volumes:
 
 The top-level `volumes:` declaration is required in every consuming project,
 also when mounting with `subpath`; otherwise Compose fails with `refers to
-undefined volume secrets`.
+undefined volume secrets`. Start `secret-sync` first (there is no `depends_on`
+across projects); consumers that start earlier should use
+`restart: unless-stopped`.
 
-Start `secret-sync` first (there is no `depends_on` across projects). Consumers
-that start before the files exist should use `restart: unless-stopped`.
+## Rotation and restarts
 
-## Restricting secrets to a group
+| `rotate` | File missing | Value changed in vault |
+|---|---|---|
+| `true` (default) | created | rewritten, labeled containers restarted |
+| `false` | created | **kept**, a warning is logged |
 
-A shared volume exposes every file to every container that mounts it. To
-separate them, add an **optional custom text field** named `group` to the
-Vaultwarden item, e.g. `mariadb`. Secret-sync then writes that item's secrets to
-`/secrets/<group>/<name>` instead of `/secrets/<name>`. Without the field, or
-with an empty one, nothing changes. Labels, rotation targets and restarts are
-not affected; only the file location differs.
+A newly created file never triggers a restart. Containers opt in with the label
+`secret-sync.restart`, a comma-separated list of targets:
 
-A consumer mounts just its group directory (Compose >= 2.26, Docker >= 26):
+- `<group>`: any item of that group changed
+- `<group>/<item>`: only that item changed (sanitized item name)
+- `<item>`: an item without group changed
 
 ```yaml
-services:
-  mariadb:
-    volumes:
-      - type: volume
-        source: secrets
-        target: /run/secrets
-        read_only: true
-        volume:
-          subpath: mariadb
-
-volumes:
-  secrets:
-    external: true
+labels:
+  secret-sync.restart: "mariadb, redis/cache"
 ```
 
-The file is still available as `/run/secrets/<name>` inside the container.
-Several containers may share a group. Limits: this separates files, it is not a
-hard barrier. A container that mounts the whole volume, or anyone who can
-create containers or reach the Docker socket, can still read everything. The
-`file` backend only; Swarm secrets already have per-service access.
+Restarting needs Docker API access (`DOCKER_HOST` or the mounted socket), see
+below. Without it, rotations are still written and a warning is logged.
 
 ## Pruning stale files
 
 With `prune: true` (default; `SECRET_SYNC_PRUNE=false` disables it) secret-sync
 keeps a list of the files it wrote (`.secret-sync-managed` in `secret_dir`) and
-removes those that a sync run no longer produces, plus emptied group
-directories. This happens when
+removes those that a run no longer produces, plus emptied directories. This
+happens when
 
-- the item was deleted in Vaultwarden (or the service user lost access to it),
-- the item moved to another `group` (the old copy is removed),
-- a secret was removed from `config.yaml`.
+- `sync_enabled` is removed or set to something other than true,
+- the item was deleted in Vaultwarden (or the service user lost access),
+- the item moved to another `group` or was renamed,
+- a custom field was removed or emptied.
 
 Files it did not write are never touched. Nothing is removed when the vault
-fetch fails or label discovery fails, and temporary errors (e.g. an empty
-field) keep the existing file. Files of label-defined secrets are only removed
-while the secret is still discovered; labels of stopped or removed containers
-are invisible, so those files stay until you delete them by hand. Consumers keep
-the file open until restarted, but new reads fail once it is gone.
+fetch fails or when the run reports any error. Consumers keep an open file until
+restarted, but new reads fail once it is gone. Files left over from older
+versions are not in the manifest; delete them by hand (for example by
+recreating the volume: `docker compose down && docker volume rm secrets`).
 
 ## Docker socket access
 
-The socket proxy runs unprivileged, so it must be a member of the group that
-owns `/var/run/docker.sock` on the host. That group ID differs between systems
-(for example `999` or `992`) and cannot be detected from inside Compose. The
-example uses `992` by default via `${DOCKER_GID:-992}`. If your host differs,
-set `DOCKER_GID` in the environment or in an optional `.env` file next to
-`compose.yaml`:
+Only needed for restarts. Use a socket proxy as in the example. The proxy runs
+unprivileged, so it must be a member of the group that owns
+`/var/run/docker.sock` on the host (for example `999` or `992`). The example uses
+`992` by default via `${DOCKER_GID:-992}`. Override it in the environment or in
+an optional `.env` file next to `compose.yaml`:
 
 ```sh
 echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" > .env
@@ -163,156 +197,50 @@ Without it the proxy logs `socket not available ... permission denied`. See
 ## Using secrets as environment variables
 
 Environment variables are fixed when a container is created, so secret-sync
-cannot inject them. Prefer the `*_FILE` variables that many images support:
-
-```yaml
-environment:
-  POSTGRES_PASSWORD_FILE: /run/secrets/db_password
-```
-
-For images without `*_FILE` support, read the file in the entrypoint (the image
+cannot inject them. Prefer the `*_FILE` variables that many images support. For
+images without `*_FILE` support, read the file in the entrypoint (the image
 needs a shell; replace `/original-entrypoint` with the image's own entrypoint).
 Rotation restarts the container, so the new value is picked up:
 
 ```yaml
-entrypoint: ["/bin/sh", "-c", "export DB_PASSWORD=$$(cat /run/secrets/db_password) && exec /original-entrypoint \"$$@\"", "--"]
+entrypoint: ["/bin/sh", "-c", "export DB_PASSWORD=$$(cat /run/secrets/app/password) && exec /original-entrypoint \"$$@\"", "--"]
 ```
-
-## Swarm
-
-See [examples/compose.swarm.yaml](examples/compose.swarm.yaml). Swarm secrets
-cannot be modified, so every new value becomes a new secret named
-`<name>_v<hash8>` labeled `secret-sync.name=<name>`. After creating a version,
-secret-sync updates all services that referenced an older version (the target
-file name inside the container is preserved) and deletes the old versions.
-Swarm secrets are always rotated through service updates; `on_change` is not
-used for them. With `rotate: false`, the first version is created and later
-vault changes are ignored.
 
 ## Configuration
 
-See [examples/config.yaml](examples/config.yaml) for a fully commented file.
-The config file is **optional**: every general setting can be set with an
-environment variable, and environment variables override the file. Only the
-`secrets:` list needs the file (or container labels).
+Every setting can be given as an environment variable or in the optional YAML
+file (`-config`, default `/etc/secret-sync/config.yaml`). Environment variables
+win over the file.
 
-| Environment variable | Config key |
-|---|---|
-| `BW_SERVER` | `bitwarden.server` |
-| `BW_CLIENTID_FILE`, `BW_CLIENTSECRET_FILE`, `BW_PASSWORD_FILE` | `bitwarden.*_file` |
-| `BW_CLIENTID`, `BW_CLIENTSECRET`, `BW_PASSWORD` | credential values (used when no file is set) |
-| `SECRET_SYNC_INTERVAL` | `interval` |
-| `SECRET_SYNC_ROTATE` | `rotate` |
-| `SECRET_SYNC_PRUNE` | `prune` |
-| `SECRET_SYNC_SECRET_DIR` | `secret_dir` |
-| `SECRET_SYNC_READY_FILE` | `ready_file` |
-| `SECRET_SYNC_WEBHOOK_LISTEN`, `SECRET_SYNC_WEBHOOK_TOKEN_FILE` | `webhook.*` |
-| `SECRET_SYNC_DISCOVERY_LABELS` | `discovery.labels` |
-| `SECRET_SYNC_LOG_LEVEL` | `debug`, `info` (default), `warn`, `error`. Not a config key |
-| `SECRET_SYNC_LOG_FORMAT` | `text` (default) or `json`. Not a config key |
-| `DOCKER_HOST` | `docker.host` |
+| Environment variable | YAML key | Default | Description |
+|---|---|---|---|
+| `BW_SERVER` | `bitwarden.server` | Bitwarden cloud | Vaultwarden URL |
+| `BW_CLIENTID_FILE` / `BW_CLIENTID` | `bitwarden.client_id_file` | – | API key client ID (file preferred) |
+| `BW_CLIENTSECRET_FILE` / `BW_CLIENTSECRET` | `bitwarden.client_secret_file` | – | API key secret |
+| `BW_PASSWORD_FILE` / `BW_PASSWORD` | `bitwarden.password_file` | – | Master password |
+| `SECRET_SYNC_INTERVAL` | `interval` | `5m` | Polling interval (min `10s`) |
+| `SECRET_SYNC_ROTATE` | `rotate` | `true` | Update existing files on change |
+| `SECRET_SYNC_PRUNE` | `prune` | `true` | Remove stale files |
+| `SECRET_SYNC_SECRET_DIR` | `secret_dir` | `/secrets` | Output directory |
+| `SECRET_SYNC_FILE_MODE` | `file_mode` | `0444` | Octal file mode |
+| `SECRET_SYNC_READY_FILE` | `ready_file` | `/tmp/secret-sync.ready` | Written after the first fully successful sync |
+| `SECRET_SYNC_WEBHOOK_LISTEN` | `webhook.listen` | off | e.g. `:8080` |
+| `SECRET_SYNC_WEBHOOK_TOKEN_FILE` | `webhook.token_file` | – | Required with the webhook |
+| `DOCKER_HOST` | `docker.host` | default socket | `tcp://host:port` or `unix:///path` |
+| `SECRET_SYNC_LOG_LEVEL` | – | `info` | `debug`, `info`, `warn`, `error` |
+| `SECRET_SYNC_LOG_FORMAT` | – | `text` | `text` or `json` |
 
-| Key | Default | Description |
-|---|---|---|
-| `bitwarden.server` | – | Vaultwarden URL |
-| `bitwarden.client_id_file` / `client_secret_file` / `password_file` | – | Credential files; fall back to `BW_CLIENTID`, `BW_CLIENTSECRET`, `BW_PASSWORD` |
-| `interval` | `5m` | Poll interval, minimum `10s` |
-| `rotate` | `true` | Default rotation behavior |
-| `prune` | `true` | Remove files secret-sync wrote earlier but no longer produces, see [Pruning](#pruning-stale-files) |
-| `secret_dir` | `/secrets` | Target directory of the `file` backend |
-| `ready_file` | `/tmp/secret-sync.ready` | Created after the first fully successful sync; used by `-healthcheck` |
-| `webhook.listen` / `webhook.token_file` | off | Enables `POST /sync` and `GET /healthz` |
-| `docker.host` | `$DOCKER_HOST`, else default socket | `unix:///path` or `tcp://host:port` |
-| `discovery.labels` | `false` | Read secret definitions from container labels |
-| `secrets[].name` | – | Secret name (`[A-Za-z0-9._-]`) |
-| `secrets[].source.item` | – | Item name or ID (must match exactly one item) |
-| `secrets[].source.folder` / `collection` | – | Narrow the lookup by name |
-| `secrets[].source.field` | `password` | `password`, `username`, `notes`, `uri`, `custom:<name>` |
-| `secrets[].backend` | `file` | `file` or `swarm` |
-| `secrets[].path` | `<name>` | File path below `secret_dir` (`file` backend) |
-| `secrets[].mode` | `0444` | Octal file mode. Consumers usually run as a different user, so files are world-readable by default; use `0400` for stricter access |
-| `secrets[].rotate` | global | Per-secret override |
-| `secrets[].on_change.action` | `none` | `none`, `restart`, `signal` |
-| `secrets[].on_change.containers` | – | Container names/IDs to act on, in addition to labeled ones |
-| `secrets[].on_change.signal` | `SIGHUP` | Signal for the `signal` action |
-
-### Label-based secret definitions
-
-With `discovery.labels: true`, containers can declare the secrets they need
-instead of listing them in `config.yaml`:
-
-```yaml
-services:
-  app:
-    image: your/app
-    volumes:
-      - secrets:/run/secrets:ro
-    labels:
-      secret-sync.db_password.item: postgres
-      secret-sync.api_token.item: my-api
-      secret-sync.api_token.field: custom:token
-      secret-sync.api_token.action: signal      # restart (default) | signal | none
-```
-
-Shorthand: one label per Vaultwarden item creates one secret per listed field,
-named `<item>_<field>`:
-
-```yaml
-labels:
-  secret-sync.item.test1: user,password   # secrets test1_user (username) and test1_password
-  secret-sync.item.myapi: custom:token    # secret myapi_token (custom field "token")
-```
-
-Fields: `user`, `password`, `notes`, `uri`, `custom:<name>`. The item name must
-only contain `[A-Za-z0-9._-]`; otherwise use the long form. Long-form labels for
-a generated name (e.g. `secret-sync.test1_user.mode: "0400"`) refine or override
-the shorthand.
-
-Long form: `secret-sync.<name>.<key>`; the name may contain dots, the key is the
-last segment. Keys: `item` (required), `folder`, `collection`, `field`, `path`,
-`mode`, `rotate`, `action`, `signal`, with the same meaning as in the config file.
-Rules:
-
-- The declaring container is restarted (or signaled) on rotation, `action`
-  defaults to `restart`. Several containers may declare the same secret if they
-  use identical labels; conflicting declarations are rejected.
-- Secrets in `config.yaml` win over labels with the same name.
-- Labels only create `file` secrets. Use `config.yaml` for the Swarm backend.
-- Discovery runs on every sync (interval or webhook) and only sees **running**
-  containers. A container that waits for `secret-sync` with
-  `depends_on: condition: service_healthy` is not running yet, so its secret does
-  not exist on first start. Define secrets that must exist at startup in
-  `config.yaml`, and use labels for services that can start without them or
-  re-read the file.
-- Secrets whose containers stopped are not removed from the secrets directory.
-- Only enable this where everyone who can create containers is trusted: any
-  container with such labels can request items the service user can read.
-
-### Rotation semantics
-
-| `rotate` | Secret missing | Value changed in vault |
-|---|---|---|
-| `true` | created | updated, action executed (swarm: services updated) |
-| `false` | created | **kept**, a warning is logged |
-
-### Label-based restarts
-
-```yaml
-services:
-  app:
-    labels:
-      secret-sync.restart: "db_password,api_token"
-```
+Secret values are never logged; only file names and the first 8 characters of
+the hash.
 
 ### Instant updates
 
 Polling is always active. To sync immediately after a change, call the webhook:
 
 ```sh
-curl -X POST -H "Authorization: Bearer $TOKEN" http://secret-sync:8080/sync
+curl -X POST -H "Authorization: Bearer <token>" http://secret-sync:8080/sync
 ```
 
-You can call it from a Vaultwarden-side script, cron, or an automation tool.
 Listening to Vaultwarden's WebSocket notifications for real push is on the
 [roadmap](#roadmap).
 
@@ -332,14 +260,8 @@ the container read-only without capabilities.
 ## Development
 
 ```sh
-go vet ./... && go test ./...
+docker run --rm -v "$PWD:/src" -w /src golang:1.23-alpine sh -c "gofmt -l . && go vet ./... && go test ./..."
 docker build -t secret-sync .
-```
-
-Go is not required locally; you can run the tests in a container:
-
-```sh
-docker run --rm -v "$PWD:/src" -w /src golang:1.23-alpine go test ./...
 ```
 
 ## Releases

@@ -10,63 +10,42 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/mbu147/vaultwarden-docker-secrets/internal/config"
 )
 
 // manifestName lists the files secret-sync wrote into secret_dir, so that
 // stale ones can be removed without touching foreign files.
 const manifestName = ".secret-sync-managed"
 
-const (
-	originConfig = "config"
-	originLabel  = "label"
-)
-
-type origSecret struct {
-	config.Secret
-	origin string
-}
-
-type managedFile struct {
-	Origin string
-	Name   string
-	Path   string // relative to secret_dir, slash separated
-}
-
 // prune removes files that an earlier run wrote but that are no longer
-// produced. keep is what this run still manages. A file that came from a
-// container label is only removed while its secret name is still discovered
-// (e.g. because its group changed or its item was deleted); labels of stopped
-// containers are invisible, so those files are left alone. Nothing is removed
-// when label discovery failed.
-func (s *Syncer) prune(keep []managedFile, discovered map[string]bool, discoveryOK bool) {
+// produced, and records the current set in the manifest. With remove=false
+// stale files are only kept in the manifest.
+func (s *Syncer) prune(keep []string, remove bool) {
 	dir := s.Cfg.SecretDir
-	old := readManifest(filepath.Join(dir, manifestName))
-
+	manifest := filepath.Join(dir, manifestName)
 	wanted := map[string]bool{}
-	next := append([]managedFile(nil), keep...)
 	for _, k := range keep {
-		wanted[k.Path] = true
+		wanted[k] = true
 	}
-	for _, o := range old {
-		if wanted[o.Path] {
-			continue
-		}
-		stale := discoveryOK && (o.Origin == originConfig || discovered[o.Name])
-		if !stale {
-			next = append(next, o)
-			continue
-		}
-		if err := removeManaged(dir, o.Path); err != nil {
-			slog.Warn("could not remove stale secret file", "secret", o.Name, "path", o.Path, "error", err)
-			next = append(next, o)
-			continue
-		}
-		slog.Info("stale secret file removed", "secret", o.Name, "path", o.Path)
+	next := map[string]bool{}
+	for k := range wanted {
+		next[k] = true
 	}
-
-	if err := writeManifest(filepath.Join(dir, manifestName), next); err != nil {
+	for _, old := range readManifest(manifest) {
+		if wanted[old] {
+			continue
+		}
+		if !remove {
+			next[old] = true
+			continue
+		}
+		if err := removeManaged(dir, old); err != nil {
+			slog.Warn("could not remove stale secret file", "path", old, "error", err)
+			next[old] = true
+			continue
+		}
+		slog.Info("stale secret file removed", "path", old)
+	}
+	if err := writeManifest(manifest, next); err != nil {
 		slog.Warn("could not write prune manifest", "error", err)
 	}
 }
@@ -77,7 +56,7 @@ func removeManaged(dir, rel string) error {
 	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	// Remove empty group directories, but never secret_dir itself.
+	// Remove empty item and group directories, but never secret_dir itself.
 	root := filepath.Clean(dir)
 	for d := filepath.Dir(p); d != root && strings.HasPrefix(d, root); d = filepath.Dir(d) {
 		if os.Remove(d) != nil { // fails while the directory is not empty
@@ -87,33 +66,28 @@ func removeManaged(dir, rel string) error {
 	return nil
 }
 
-func readManifest(file string) []managedFile {
+func readManifest(file string) []string {
 	f, err := os.Open(file)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
-	var out []managedFile
+	var out []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		parts := strings.SplitN(sc.Text(), "\t", 3)
-		if len(parts) == 3 {
-			out = append(out, managedFile{Origin: parts[0], Name: parts[1], Path: parts[2]})
+		if line := strings.TrimSpace(sc.Text()); line != "" {
+			out = append(out, line)
 		}
 	}
 	return out
 }
 
-func writeManifest(file string, files []managedFile) error {
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+func writeManifest(file string, paths map[string]bool) error {
 	var b strings.Builder
-	seen := map[string]bool{}
-	for _, m := range files {
-		if seen[m.Path] {
-			continue
-		}
-		seen[m.Path] = true
-		b.WriteString(m.Origin + "\t" + m.Name + "\t" + m.Path + "\n")
+	keys := sortedKeys(paths)
+	sort.Strings(keys)
+	for _, k := range keys {
+		b.WriteString(k + "\n")
 	}
 	if old, err := os.ReadFile(file); err == nil && string(old) == b.String() {
 		return nil

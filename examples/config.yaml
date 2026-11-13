@@ -1,8 +1,7 @@
-# Example secret-sync configuration.
-# Copy to ./config/config.yaml and adapt. See README.md for all options.
+# Optional example configuration. Everything here can also be set with
+# environment variables (see README.md); copy to ./config/config.yaml to use it.
 
 bitwarden:
-  # URL of your Vaultwarden instance
   server: https://vault.example.com
   # Credentials are read from files (mount them as Docker secrets).
   # If a *_file option is omitted, BW_CLIENTID / BW_CLIENTSECRET / BW_PASSWORD
@@ -14,17 +13,17 @@ bitwarden:
 # How often to poll Vaultwarden (minimum 10s).
 interval: 5m
 
-# Default rotation behavior. Can be overridden per secret.
-# true:  update secrets when the vault value changes and run on_change actions
+# true:  update existing files when the vault value changes and restart
+#        labeled containers
 # false: write once and never overwrite (changes are only logged)
 rotate: true
 
 # Remove files that secret-sync wrote earlier but no longer produces (item
-# deleted in the vault, moved to another group, secret removed from this file).
+# deleted, sync_enabled removed, group changed).
 prune: true
 
-# Directory for the "file" backend.
 secret_dir: /secrets
+file_mode: "0444"
 
 # Optional: trigger an immediate sync with
 #   curl -X POST -H "Authorization: Bearer <token>" http://secret-sync:8080/sync
@@ -32,46 +31,7 @@ webhook:
   listen: ":8080"
   token_file: /run/secrets/sync_webhook_token
 
-# Only needed for on_change actions or the swarm backend.
-# Prefer a socket proxy over mounting the Docker socket directly.
+# Only used to restart containers after a rotation. Prefer a socket proxy over
+# mounting the Docker socket directly.
 docker:
   host: tcp://docker-proxy:2375
-
-# Optional: let containers declare secrets with labels
-# (secret-sync.<name>.item, .field, .folder, .collection, .path, .mode,
-# .rotate, .action, .signal). Needs the Docker API. Secrets defined below win
-# over labels with the same name. See README.md.
-discovery:
-  labels: false
-
-secrets:
-  # Written to /secrets/db_password, app is restarted when the value changes.
-  - name: db_password
-    source:
-      item: postgres          # item name or ID
-      folder: homelab         # optional filter
-      field: password         # password (default) | username | notes | uri | custom:<name>
-    backend: file             # file (default) | swarm
-    mode: "0444"              # file mode (default 0444)
-    on_change:
-      action: restart         # none (default) | restart | signal
-      containers: [app]       # names/IDs; labeled containers are added automatically
-
-  # Reloaded via signal instead of a restart.
-  - name: api_token
-    source:
-      item: my-api
-      collection: prod
-      field: custom:token
-    mode: "0444"
-    on_change:
-      action: signal
-      signal: SIGHUP
-      containers: [app]
-
-  # Written once, never overwritten afterwards.
-  - name: jwt_seed
-    source:
-      item: jwt
-      field: notes
-    rotate: false

@@ -16,11 +16,7 @@ services:
       - "-listenip=0.0.0.0"
       - "-allowfrom=secret-sync"   # container name of secret-sync, nothing else may connect
       - "-allowGET=/containers/json"
-      - "-allowPOST=/containers/[^/]+/(restart|kill)"
-      # Swarm backend additionally needs:
-      # - "-allowGET=/(secrets|services)"
-      # - "-allowPOST=/(secrets/create|services/[^/]+/update)"
-      # - "-allowDELETE=/secrets/[^/]+"
+      - "-allowPOST=/containers/[^/]+/restart"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [sync]
@@ -44,8 +40,7 @@ services:
       BW_CLIENTID_FILE: /run/secrets/bw_client_id
       BW_CLIENTSECRET_FILE: /run/secrets/bw_client_secret
       BW_PASSWORD_FILE: /run/secrets/bw_password
-      DOCKER_HOST: tcp://docker-proxy:2375
-      SECRET_SYNC_DISCOVERY_LABELS: "true"   # define secrets with container labels
+      DOCKER_HOST: tcp://docker-proxy:2375   # only needed for restarts
       # SECRET_SYNC_INTERVAL: 5m
       # SECRET_SYNC_ROTATE: "true"
       SECRET_SYNC_WEBHOOK_LISTEN: ":8080"
@@ -57,25 +52,28 @@ services:
       retries: 6
     networks: [sync]
 
-  # Example consumer: replace with your own service. Any container that can
-  # read a secret from a file works (many images support *_FILE variables).
-  app:
-    image: your/app:latest
+  # Example consumer. In Vaultwarden the item "mariadb-root" has the custom
+  # fields sync_enabled=true and group=mariadb, which creates
+  # /secrets/mariadb/mariadb-root/password.
+  mariadb:
+    image: mariadb:11
     # Wait until the first sync has written all secrets.
     depends_on:
       secret-sync:
         condition: service_healthy
     volumes:
-      - secrets:/run/secrets:ro
+      - type: volume
+        source: secrets
+        target: /run/secrets          # sees only the "mariadb" group
+        read_only: true
+        volume:
+          subpath: mariadb
     environment:
-      DB_PASSWORD_FILE: /run/secrets/db_password
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb-root/password
     labels:
-      # Option A: the secret is defined in config.yaml, this container is only
-      # restarted when it rotates.
-      secret-sync.restart: "db_password"
-      # Option B (needs discovery.labels: true): define the secret right here.
-      # The container is restarted on rotation automatically.
-      # secret-sync.db_password.item: postgres
+      # Restart this container when a secret of the group "mariadb" changes.
+      # Optional; use "<group>/<item>" to react to a single item only.
+      secret-sync.restart: "mariadb"
 
 volumes:
   secrets:
@@ -88,19 +86,11 @@ volumes:
       device: tmpfs
       o: uid=1000,gid=1000,mode=0755
 
-# Consumers in OTHER compose projects declare the same volume as external:
+# Consumers in OTHER compose projects declare the same volume as external
+# (the volume is created by this file, so start secret-sync first):
 # volumes:
 #   secrets:
 #     external: true
-# and mount it read-only: "- secrets:/run/secrets:ro". The volume is created by
-# this file (start secret-sync first); no manual "docker volume create" needed.
-# The declaration is required even when mounting only a group directory:
-#   - type: volume
-#     source: secrets
-#     target: /run/secrets
-#     read_only: true
-#     volume:
-#       subpath: mariadb
 
 networks:
   sync: {}

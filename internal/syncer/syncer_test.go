@@ -6,215 +6,187 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mbu147/vaultwarden-docker-secrets/internal/backend"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/bw"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/config"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/docker"
 )
 
-type fakeVault struct{ password string }
+type fld = struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
 
-func (f *fakeVault) Fetch(context.Context) (*bw.Vault, error) {
-	it := bw.Item{ID: "1", Name: "db"}
+func mkItem(name, pw string, fields ...fld) bw.Item {
+	it := bw.Item{ID: name, Name: name, Fields: fields}
 	it.Login = &struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		URIs     []struct {
 			URI string `json:"uri"`
 		} `json:"uris"`
-	}{Password: f.password}
-	return &bw.Vault{Items: []bw.Item{it}}, nil
+	}{Password: pw}
+	return it
 }
 
-type fakeContainers struct{ restarted, killed []string }
+type fakeVault struct {
+	items []bw.Item
+	err   error
+}
+
+func (f *fakeVault) Fetch(context.Context) (*bw.Vault, error) {
+	return &bw.Vault{Items: f.items}, f.err
+}
+
+type fakeContainers struct {
+	list      []docker.Container
+	restarted []string
+}
 
 func (f *fakeContainers) ListContainers(context.Context, string) ([]docker.Container, error) {
-	return []docker.Container{{ID: "labeled", Labels: map[string]string{RestartLabel: "a, db"}}}, nil
+	return f.list, nil
 }
+
 func (f *fakeContainers) RestartContainer(_ context.Context, id string) error {
 	f.restarted = append(f.restarted, id)
 	return nil
 }
-func (f *fakeContainers) KillContainer(_ context.Context, id, _ string) error {
-	f.killed = append(f.killed, id)
-	return nil
-}
 
-func newTest(t *testing.T, rotate bool, action string) (*Syncer, *fakeVault, *fakeContainers, string) {
+var on = fld{"sync_enabled", "true"}
+
+func setup(t *testing.T, items ...bw.Item) (*Syncer, *fakeVault, *fakeContainers, string) {
 	t.Helper()
 	dir := t.TempDir()
-	yml := "secret_dir: " + filepath.ToSlash(dir) + "\n" +
-		"ready_file: " + filepath.ToSlash(filepath.Join(dir, "ready")) + "\n" +
-		"secrets:\n  - name: db\n    source: {item: db}\n"
-	if !rotate {
-		yml += "    rotate: false\n"
-	}
-	yml += "    on_change: {action: " + action + ", containers: [app]}\n"
-	cfg, err := config.Parse([]byte(yml))
+	cfg, err := config.Parse(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v := &fakeVault{password: "one"}
-	c := &fakeContainers{}
-	s := New(cfg, v, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, c)
+	cfg.SecretDir = dir
+	cfg.ReadyFile = filepath.Join(t.TempDir(), "ready")
+	v := &fakeVault{items: items}
+	c := &fakeContainers{list: []docker.Container{
+		{ID: "db", Names: []string{"/db"}, Labels: map[string]string{RestartLabel: "mariadb"}},
+		{ID: "other", Names: []string{"/other"}, Labels: map[string]string{RestartLabel: "web, redis/cache"}},
+	}}
+	s := New(cfg, v, c)
 	return s, v, c, dir
 }
 
-func TestGroupField(t *testing.T) {
-	for _, tc := range []struct{ value, file string }{
-		{"mariadb", "mariadb/db"},
-		{"  ", "db"}, // blank field: unchanged
-	} {
-		dir := t.TempDir()
-		cfg, err := config.Parse([]byte("secret_dir: " + filepath.ToSlash(dir) + "\nready_file: " +
-			filepath.ToSlash(filepath.Join(dir, "ready")) + "\nsecrets:\n  - name: db\n    source: {item: db}\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		s := New(cfg, &groupVault{group: tc.value}, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, &fakeContainers{})
-		if err := s.SyncOnce(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if got, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(tc.file))); string(got) != "pw" {
-			t.Errorf("group %q: %s has %q", tc.value, tc.file, got)
-		}
+func read(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "<missing>"
+	}
+	return string(b)
+}
+
+func TestSyncCreateAndRotate(t *testing.T) {
+	s, v, c, dir := setup(t, mkItem("root pw", "one", on, fld{"group", "mariadb"}), mkItem("ignored", "x"))
+	ctx := context.Background()
+	if err := s.SyncOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "mariadb", "root_pw", "password")
+	if read(t, p) != "one" || read(t, filepath.Join(dir, "ignored", "password")) != "<missing>" {
+		t.Fatal("unexpected files after first sync")
+	}
+	if len(c.restarted) != 0 || !s.Healthy() {
+		t.Fatalf("creation must not restart: %v", c.restarted)
+	}
+	if _, err := os.Stat(s.Cfg.ReadyFile); err != nil {
+		t.Fatal("ready file missing")
+	}
+
+	v.items = []bw.Item{mkItem("root pw", "two", on, fld{"group", "mariadb"})}
+	if err := s.SyncOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, p) != "two" || len(c.restarted) != 1 || c.restarted[0] != "db" {
+		t.Fatalf("rotation failed: %q %v", read(t, p), c.restarted)
+	}
+}
+
+func TestRestartByItemTarget(t *testing.T) {
+	s, v, c, _ := setup(t, mkItem("cache", "a", on, fld{"group", "redis"}))
+	ctx := context.Background()
+	_ = s.SyncOnce(ctx)
+	v.items = []bw.Item{mkItem("cache", "b", on, fld{"group", "redis"})}
+	_ = s.SyncOnce(ctx)
+	if len(c.restarted) != 1 || c.restarted[0] != "other" {
+		t.Fatalf("restarted: %v", c.restarted)
+	}
+}
+
+func TestRotateDisabled(t *testing.T) {
+	s, v, c, dir := setup(t, mkItem("db", "one", on))
+	f := false
+	s.Cfg.Rotate = &f
+	ctx := context.Background()
+	_ = s.SyncOnce(ctx)
+	v.items = []bw.Item{mkItem("db", "two", on)}
+	_ = s.SyncOnce(ctx)
+	if read(t, filepath.Join(dir, "db", "password")) != "one" || len(c.restarted) != 0 {
+		t.Fatal("existing secret must be kept when rotate is false")
 	}
 }
 
 func TestPrune(t *testing.T) {
-	dir := t.TempDir()
-	cfg, err := config.Parse([]byte("secret_dir: " + filepath.ToSlash(dir) + "\nready_file: " +
-		filepath.ToSlash(filepath.Join(dir, "ready")) + "\nsecrets:\n  - name: db\n    source: {item: db}\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	foreign := filepath.Join(dir, "foreign")
-	if err := os.WriteFile(foreign, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	v := &groupVault{group: "mariadb"}
-	s := New(cfg, v, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, &fakeContainers{})
+	s, v, _, dir := setup(t, mkItem("db", "one", on, fld{"group", "g"}), mkItem("keep", "k", on))
 	ctx := context.Background()
+	_ = s.SyncOnce(ctx)
+	foreign := filepath.Join(dir, "foreign")
+	_ = os.WriteFile(foreign, []byte("x"), 0o600)
+
+	// Group change moves the file; sync_enabled removal deletes it.
+	v.items = []bw.Item{mkItem("db", "one", on, fld{"group", "h"}), mkItem("keep", "k")}
 	if err := s.SyncOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if read(t, filepath.Join(dir, "g", "db", "password")) != "<missing>" ||
+		read(t, filepath.Join(dir, "h", "db", "password")) != "one" ||
+		read(t, filepath.Join(dir, "keep", "password")) != "<missing>" {
+		t.Fatal("stale files not pruned")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "g")); err == nil {
+		t.Fatal("empty group dir should be removed")
+	}
+	if read(t, foreign) != "x" {
+		t.Fatal("foreign file must never be removed")
+	}
 
-	// Moving the item to another group removes the old file and its empty dir.
-	v.group = "other"
-	if err := s.SyncOnce(ctx); err != nil {
-		t.Fatal(err)
+	// Item deleted.
+	v.items = nil
+	_ = s.SyncOnce(ctx)
+	if read(t, filepath.Join(dir, "h", "db", "password")) != "<missing>" {
+		t.Fatal("deleted item not pruned")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "mariadb")); err == nil {
-		t.Error("old group directory should be removed")
-	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "other", "db")); string(got) != "pw" {
-		t.Errorf("new file missing: %q", got)
-	}
+}
 
-	// Deleting the item in the vault removes the file; foreign files stay.
-	v.missing = true
+func TestPruneSkippedOnErrors(t *testing.T) {
+	s, v, _, dir := setup(t, mkItem("db", "one", on))
+	ctx := context.Background()
+	_ = s.SyncOnce(ctx)
+	v.items = []bw.Item{mkItem("bad", "x", on, fld{"group", "../x"})}
 	if err := s.SyncOnce(ctx); err == nil {
-		t.Fatal("expected not-found error")
+		t.Fatal("expected error")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "other", "db")); err == nil {
-		t.Error("file of deleted item should be removed")
+	if read(t, filepath.Join(dir, "db", "password")) != "one" {
+		t.Fatal("nothing may be removed when the run had errors")
 	}
-	if _, err := os.Stat(foreign); err != nil {
-		t.Error("foreign file must not be removed")
+	v.err = os.ErrDeadlineExceeded
+	if err := s.SyncOnce(ctx); err == nil || s.Healthy() {
+		t.Fatal("fetch failure must be reported")
 	}
 }
 
 func TestPruneDisabled(t *testing.T) {
-	dir := t.TempDir()
-	cfg, err := config.Parse([]byte("prune: false\nsecret_dir: " + filepath.ToSlash(dir) + "\nready_file: " +
-		filepath.ToSlash(filepath.Join(dir, "ready")) + "\nsecrets:\n  - name: db\n    source: {item: db}\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	v := &groupVault{}
-	s := New(cfg, v, map[string]backend.Backend{"file": &backend.File{Dir: dir}}, &fakeContainers{})
-	if err := s.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	v.missing = true
+	s, v, _, dir := setup(t, mkItem("db", "one", on))
+	f := false
+	s.Cfg.Prune = &f
 	_ = s.SyncOnce(context.Background())
-	if _, err := os.Stat(filepath.Join(dir, "db")); err != nil {
-		t.Error("prune disabled: file must stay")
-	}
-}
-
-type groupVault struct {
-	group   string
-	missing bool
-}
-
-func (g *groupVault) Fetch(context.Context) (*bw.Vault, error) {
-	if g.missing {
-		return &bw.Vault{}, nil
-	}
-	it := bw.Item{ID: "1", Name: "db"}
-	it.Login = &struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		URIs     []struct {
-			URI string `json:"uri"`
-		} `json:"uris"`
-	}{Password: "pw"}
-	it.Fields = []struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
-	}{{Name: "group", Value: g.group}}
-	return &bw.Vault{Items: []bw.Item{it}}, nil
-}
-
-func TestRotation(t *testing.T) {
-	s, v, c, dir := newTest(t, true, "restart")
-	ctx := context.Background()
-
-	if err := s.SyncOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "db")); string(got) != "one" {
-		t.Fatalf("got %q", got)
-	}
-	if len(c.restarted) != 0 {
-		t.Fatal("initial creation must not restart consumers")
-	}
-
-	v.password = "two"
-	if err := s.SyncOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "db")); string(got) != "two" {
-		t.Fatalf("got %q", got)
-	}
-	if len(c.restarted) != 2 { // "app" from config + "labeled" from label
-		t.Fatalf("restarted = %v", c.restarted)
-	}
-}
-
-func TestRotationDisabled(t *testing.T) {
-	s, v, c, dir := newTest(t, false, "restart")
-	ctx := context.Background()
-	_ = s.SyncOnce(ctx)
-	v.password = "two"
-	if err := s.SyncOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "db")); string(got) != "one" {
-		t.Fatalf("value must not change, got %q", got)
-	}
-	if len(c.restarted) != 0 {
-		t.Fatal("no restart expected")
-	}
-}
-
-func TestSignal(t *testing.T) {
-	s, v, c, _ := newTest(t, true, "signal")
+	v.items = nil
 	_ = s.SyncOnce(context.Background())
-	v.password = "two"
-	_ = s.SyncOnce(context.Background())
-	if len(c.killed) != 2 {
-		t.Fatalf("killed = %v", c.killed)
+	if read(t, filepath.Join(dir, "db", "password")) != "one" {
+		t.Fatal("prune=false must keep files")
 	}
 }
