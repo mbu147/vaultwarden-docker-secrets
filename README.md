@@ -86,6 +86,10 @@ volumes:
     external: true
 ```
 
+The top-level `volumes:` declaration is required in every consuming project,
+also when mounting with `subpath`; otherwise Compose fails with `refers to
+undefined volume secrets`.
+
 Start `secret-sync` first (there is no `depends_on` across projects). Consumers
 that start before the files exist should use `restart: unless-stopped`.
 
