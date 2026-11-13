@@ -67,7 +67,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Attestations are not available for user-owned private repositories.
       - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.IMAGE }}
