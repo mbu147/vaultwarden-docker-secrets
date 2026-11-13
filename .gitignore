@@ -2,6 +2,7 @@
 /secrets/
 *.secret
 .env
+!examples/.env.example
 bin/
 dist/
 config.yaml

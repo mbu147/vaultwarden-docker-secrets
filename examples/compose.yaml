@@ -8,6 +8,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # The proxy runs unprivileged and needs the group that owns the Docker
+    # socket. Set DOCKER_GID in .env, see README ("Docker socket access").
+    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env, see README}"]
     command:
       - "-listenip=0.0.0.0"
       - "-allowfrom=secret-sync"   # container name of secret-sync, nothing else may connect

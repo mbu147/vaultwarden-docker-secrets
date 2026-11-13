@@ -62,6 +62,21 @@ files with Compose's top-level `secrets: <name>: file: ./secrets/<name>`. The
 file must exist before the consumer starts, so keep the `depends_on` health
 condition.
 
+## Docker socket access
+
+The socket proxy runs unprivileged, so it must be a member of the group that
+owns `/var/run/docker.sock` on the host. That group ID differs between systems
+(for example `999` or `992`) and cannot be detected from inside Compose. Write it
+to a `.env` file next to `compose.yaml`; the example reads it as `DOCKER_GID`
+and refuses to start if it is missing:
+
+```sh
+echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" > .env
+```
+
+Without it the proxy logs `socket not available ... permission denied`. See
+[examples/.env.example](examples/.env.example).
+
 ## Swarm
 
 See [examples/compose.swarm.yaml](examples/compose.swarm.yaml). Swarm secrets
