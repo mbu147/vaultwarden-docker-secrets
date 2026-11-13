@@ -84,6 +84,24 @@ echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" > .env
 Without it the proxy logs `socket not available ... permission denied`. See
 [examples/.env.example](examples/.env.example).
 
+## Using secrets as environment variables
+
+Environment variables are fixed when a container is created, so secret-sync
+cannot inject them. Prefer the `*_FILE` variables that many images support:
+
+```yaml
+environment:
+  POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+```
+
+For images without `*_FILE` support, read the file in the entrypoint (the image
+needs a shell; replace `/original-entrypoint` with the image's own entrypoint).
+Rotation restarts the container, so the new value is picked up:
+
+```yaml
+entrypoint: ["/bin/sh", "-c", "export DB_PASSWORD=$$(cat /run/secrets/db_password) && exec /original-entrypoint \"$$@\"", "--"]
+```
+
 ## Swarm
 
 See [examples/compose.swarm.yaml](examples/compose.swarm.yaml). Swarm secrets
