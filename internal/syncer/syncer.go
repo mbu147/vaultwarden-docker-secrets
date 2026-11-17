@@ -147,6 +147,7 @@ func (s *Syncer) syncFile(rel string, value []byte) (bool, error) {
 	}
 	hash := backend.Hash(value)
 	if exists && cur == hash {
+		slog.Debug("secret unchanged", "file", rel, "hash", short(hash))
 		return false, nil
 	}
 	if exists && !s.Cfg.RotateEnabled() {
