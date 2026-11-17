@@ -23,8 +23,12 @@ type Config struct {
 	Rotate *bool `yaml:"rotate"`
 	// Prune removes files secret-sync wrote earlier but no longer produces
 	// (item deleted, sync_enabled removed, group changed). Default true.
-	Prune     *bool   `yaml:"prune"`
-	SecretDir string  `yaml:"secret_dir"`
+	Prune     *bool  `yaml:"prune"`
+	SecretDir string `yaml:"secret_dir"`
+	// DataDir holds the bw CLI state: login and encrypted vault cache (default
+	// /data). It survives restarts only if it is a mount point; otherwise a temp
+	// directory is used and the cache is rebuilt on every start.
+	DataDir   string  `yaml:"data_dir"`
 	ReadyFile string  `yaml:"ready_file"`
 	FileMode  string  `yaml:"file_mode"`
 	Webhook   Webhook `yaml:"webhook"`
@@ -120,6 +124,7 @@ func (c *Config) applyEnv(get func(string) string) error {
 	str(&c.Bitwarden.ClientSecretFile, "BW_CLIENTSECRET_FILE")
 	str(&c.Bitwarden.PasswordFile, "BW_PASSWORD_FILE")
 	str(&c.SecretDir, "SECRET_SYNC_SECRET_DIR")
+	str(&c.DataDir, "SECRET_SYNC_DATA_DIR")
 	str(&c.ReadyFile, "SECRET_SYNC_READY_FILE")
 	str(&c.FileMode, "SECRET_SYNC_FILE_MODE")
 	str(&c.Webhook.Listen, "SECRET_SYNC_WEBHOOK_LISTEN")
@@ -145,6 +150,9 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.Interval < 10*time.Second {
 		return fmt.Errorf("interval must be at least 10s")
+	}
+	if c.DataDir == "" {
+		c.DataDir = "/data"
 	}
 	if c.SecretDir == "" {
 		c.SecretDir = "/secrets"

@@ -222,6 +222,7 @@ win over the file.
 | `SECRET_SYNC_ROTATE` | `rotate` | `true` | Update existing files on change |
 | `SECRET_SYNC_PRUNE` | `prune` | `true` | Remove stale files |
 | `SECRET_SYNC_SECRET_DIR` | `secret_dir` | `/secrets` | Output directory |
+| `SECRET_SYNC_DATA_DIR` | `data_dir` | `/data` | bw CLI state: login and vault cache (encrypted by Bitwarden with the master key). If the vault is unreachable, secrets are written from this cache. It survives restarts only when a persistent volume is mounted here; otherwise a temp directory is used and the cache is rebuilt from the vault on every start |
 | `SECRET_SYNC_FILE_MODE` | `file_mode` | `0444` | Octal file mode |
 | `SECRET_SYNC_READY_FILE` | `ready_file` | `/tmp/secret-sync.ready` | Written after the first fully successful sync |
 | `SECRET_SYNC_WEBHOOK_LISTEN` | `webhook.listen` | off | e.g. `:8080` |

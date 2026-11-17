@@ -23,6 +23,11 @@ rotate: true
 prune: true
 
 secret_dir: /secrets
+
+# bw CLI state (login + vault cache encrypted by Bitwarden), used while the vault
+# is unreachable. Mount a volume here to keep it across restarts; without one it
+# is rebuilt from the vault on every start.
+# data_dir: /data
 file_mode: "0444"
 
 # Optional: trigger an immediate sync with

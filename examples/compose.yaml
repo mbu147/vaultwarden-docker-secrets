@@ -34,6 +34,7 @@ services:
     volumes:
       - ./config/config.yaml:/etc/secret-sync/config.yaml:ro   # optional
       - secrets:/secrets
+      # - sync-data:/data   # keeps the vault cache across restarts (declare volume sync-data)
     secrets: [bw_client_id, bw_client_secret, bw_password, sync_webhook_token]
     environment:
       # Avoid a chicken-and-egg problem: if the vault is only reachable through a

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -199,7 +200,8 @@ type Client struct {
 	Binary string
 	Server string
 	Creds  Credentials
-	// DataDir is the CLI app data directory; it should live on tmpfs.
+	// DataDir is the CLI app data directory. It holds the login and the
+	// encrypted vault cache, which is served while the server is unreachable.
 	DataDir string
 
 	mu      sync.Mutex
@@ -234,6 +236,9 @@ func (c *Client) Login(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.cachedLogin(ctx) {
+		return c.unlock(ctx)
+	}
 	if c.Server != "" {
 		// Changing the server is only allowed while logged out.
 		_, _ = c.run(ctx, nil, "logout")
@@ -247,6 +252,22 @@ func (c *Client) Login(ctx context.Context) error {
 		return err
 	}
 	return c.unlock(ctx)
+}
+
+// cachedLogin reports whether DataDir already holds a login for c.Server.
+func (c *Client) cachedLogin(ctx context.Context) bool {
+	out, err := c.run(ctx, nil, "status")
+	if err != nil {
+		return false
+	}
+	var st struct {
+		ServerURL string `json:"serverUrl"`
+		Status    string `json:"status"`
+	}
+	if json.Unmarshal([]byte(out), &st) != nil || st.Status == "unauthenticated" {
+		return false
+	}
+	return c.Server == "" || strings.TrimRight(st.ServerURL, "/") == strings.TrimRight(c.Server, "/")
 }
 
 func (c *Client) unlock(ctx context.Context) error {
@@ -263,7 +284,6 @@ func (c *Client) unlock(ctx context.Context) error {
 func (c *Client) Close(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, _ = c.run(ctx, nil, "logout")
 	c.session = ""
 }
 
@@ -286,7 +306,7 @@ func (c *Client) Fetch(ctx context.Context) (*Vault, error) {
 func (c *Client) fetch(ctx context.Context) (*Vault, error) {
 	env := []string{"BW_SESSION=" + c.session}
 	if _, err := c.run(ctx, env, "sync"); err != nil {
-		return nil, err
+		slog.Warn("vault sync failed, using cached vault", "error", err)
 	}
 	out, err := c.run(ctx, env, "list", "items")
 	if err != nil {

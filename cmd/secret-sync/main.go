@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -70,11 +72,16 @@ func run(cfgPath string, once, health bool) error {
 	if err != nil {
 		return err
 	}
-	dataDir, err := os.MkdirTemp("", "bw-")
-	if err != nil {
-		return err
+	dataDir := cfg.DataDir
+	if isMountPoint(dataDir) {
+		slog.Info("vault cache is persistent", "dir", dataDir)
+	} else {
+		slog.Info("vault cache is not persistent (no volume mounted at data_dir)", "dir", dataDir)
+		if dataDir, err = os.MkdirTemp("", "bw-"); err != nil {
+			return err
+		}
+		defer os.RemoveAll(dataDir)
 	}
-	defer os.RemoveAll(dataDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -118,6 +125,22 @@ func run(cfgPath string, once, health bool) error {
 	}
 	s.Run(ctx)
 	return nil
+}
+
+// isMountPoint reports whether dir is a mount point (Linux); a plain directory
+// in the container layer would not survive a recreate anyway.
+func isMountPoint(dir string) bool {
+	b, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false
+	}
+	dir = filepath.Clean(dir)
+	for _, line := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(line); len(f) > 4 && f[4] == dir {
+			return true
+		}
+	}
+	return false
 }
 
 // loginWithRetry keeps trying while the vault is unreachable (e.g. it starts
