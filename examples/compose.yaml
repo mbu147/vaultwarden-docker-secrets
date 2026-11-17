@@ -36,6 +36,12 @@ services:
       - secrets:/secrets
     secrets: [bw_client_id, bw_client_secret, bw_password, sync_webhook_token]
     environment:
+      # Avoid a chicken-and-egg problem: if the vault is only reachable through a
+      # reverse proxy that itself needs a synced secret, bypass the proxy. bw
+      # requires https, so let Vaultwarden serve TLS itself (ROCKET_TLS with a
+      # self-signed cert whose SAN is "vaultwarden") and trust that cert here:
+      #   BW_SERVER: https://vaultwarden:8443
+      #   NODE_EXTRA_CA_CERTS: /certs/vaultwarden.crt   (mount the cert read-only)
       BW_SERVER: https://vault.example.com
       BW_CLIENTID_FILE: /run/secrets/bw_client_id
       BW_CLIENTSECRET_FILE: /run/secrets/bw_client_secret

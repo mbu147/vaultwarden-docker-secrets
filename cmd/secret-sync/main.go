@@ -80,7 +80,7 @@ func run(cfgPath string, once, health bool) error {
 	defer stop()
 
 	client := &bw.Client{Server: cfg.Bitwarden.Server, Creds: creds, DataDir: dataDir}
-	if err := client.Login(ctx); err != nil {
+	if err := loginWithRetry(ctx, client, once); err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
 	defer func() {
@@ -118,6 +118,27 @@ func run(cfgPath string, once, health bool) error {
 	}
 	s.Run(ctx)
 	return nil
+}
+
+// loginWithRetry keeps trying while the vault is unreachable (e.g. it starts
+// together with secret-sync). A single-shot run fails immediately.
+func loginWithRetry(ctx context.Context, c *bw.Client, once bool) error {
+	delay := 2 * time.Second
+	for {
+		err := c.Login(ctx)
+		if err == nil || once || ctx.Err() != nil {
+			return err
+		}
+		slog.Warn("vault login failed, retrying", "error", err, "in", delay)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay < time.Minute {
+			delay *= 2
+		}
+	}
 }
 
 // dockerAvailable reports whether restarts can be attempted: a Docker host is
