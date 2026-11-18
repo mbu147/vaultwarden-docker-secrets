@@ -48,7 +48,11 @@ your Compose projects and Arcane, so treat it as a high-value component.
 - Arcane variables flagged secret are encrypted in Arcane's database, but Arcane
   writes them in plaintext to `.env.global` on its agents. The Arcane API key can
   manage all variables; store it as a Docker secret, not as an environment
-  variable. Variables are never deleted by secret-sync.
+  variable. Variables removed from the vault are deleted again, but only those
+  listed in secret-sync's `SECRET_SYNC_MANAGED` variable.
+- With `ARCANE_URL` and an API key set, **every** synced item is pushed to Arcane
+  unless it has `sync_arcane = false`. Set that field on items that must not
+  leave the vault, or restrict them with `sync_arcane_agents`.
 
 ## Container hardening
 

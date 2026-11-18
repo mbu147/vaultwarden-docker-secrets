@@ -108,9 +108,9 @@ func run(cfgPath string, once, health bool) error {
 		s.Variables = arcane.New(cfg.Arcane.URL, key)
 	}
 	slog.Info("secret-sync started", "version", version, "interval", cfg.Interval, "docker", containers != nil,
-		"env_files", cfg.EnvFile.Dir != "", "arcane", s.Variables != nil)
-	if cfg.EnvFile.Dir == "" && s.Variables == nil {
-		slog.Warn("neither env_file.dir nor Arcane is configured; synced items are not written anywhere")
+		"env_files", cfg.EnvFileEnabled(), "arcane", s.Variables != nil)
+	if !cfg.EnvFileEnabled() && s.Variables == nil {
+		slog.Warn("neither env files nor Arcane are enabled; synced items are not written anywhere")
 	}
 
 	if once {

@@ -45,7 +45,7 @@ func (e envVars) add(it bw.SyncedItem, owner string) error {
 // that has containers labeled EnvLabel.
 func (s *Syncer) syncEnvFiles(ctx context.Context, items []bw.SyncedItem) []error {
 	base := s.Cfg.EnvFile.Dir
-	if base == "" {
+	if !s.Cfg.EnvFileEnabled() {
 		return nil
 	}
 	if s.Containers == nil {
@@ -82,6 +82,9 @@ func (s *Syncer) syncEnvFiles(ctx context.Context, items []bw.SyncedItem) []erro
 			}
 		}
 		for _, it := range items {
+			if it.SkipEnvFile {
+				continue
+			}
 			for _, t := range it.Targets() {
 				if targets[t] {
 					if err := vars.add(it, "container "+name); err != nil {

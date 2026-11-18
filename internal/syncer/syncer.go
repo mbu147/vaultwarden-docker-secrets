@@ -33,7 +33,9 @@ type Containers interface {
 // Secret values are never returned by Arcane, so they cannot be compared.
 type VariableStore interface {
 	List(ctx context.Context) ([]arcane.Variable, error)
+	Environments(ctx context.Context) ([]arcane.Environment, error)
 	Create(ctx context.Context, v arcane.Variable) error
+	Delete(ctx context.Context, id string) error
 	Update(ctx context.Context, id string, v arcane.Variable) error
 }
 
@@ -95,12 +97,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("fetch vault: %w", err)
 	}
 	items, errs := vault.Synced()
+	vaultOK := len(errs) == 0
 	for _, it := range items {
 		slog.Debug("item selected", "item", it.Dir, "group", it.Group, "values", len(it.Files))
 	}
 
 	errs = append(errs, s.syncEnvFiles(ctx, items)...)
-	errs = append(errs, s.syncArcane(ctx, items)...)
+	errs = append(errs, s.syncArcane(ctx, items, vaultOK)...)
 
 	if err := s.markReady(len(errs) == 0); err != nil {
 		errs = append(errs, err)

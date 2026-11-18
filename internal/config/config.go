@@ -48,8 +48,10 @@ type Docker struct {
 }
 
 // EnvFile configures writing dotenv files into Compose project directories.
-// It is enabled when Dir is set.
+// It is enabled when Dir is set, unless Enabled is false.
 type EnvFile struct {
+	// Enabled is a central switch (default true when Dir is set).
+	Enabled *bool `yaml:"enabled"`
 	// Dir is the base directory that contains the Compose projects (mounted
 	// into secret-sync at the same path Compose reports as working_dir). Only
 	// projects below it are written.
@@ -69,6 +71,11 @@ type Arcane struct {
 	APIKeyFile string `yaml:"api_key_file"`
 	// Enabled is a central switch (default true when URL is set).
 	Enabled *bool `yaml:"enabled"`
+}
+
+// EnvFileEnabled reports whether .secrets files are written.
+func (c *Config) EnvFileEnabled() bool {
+	return c.EnvFile.Dir != "" && (c.EnvFile.Enabled == nil || *c.EnvFile.Enabled)
 }
 
 // ArcaneEnabled reports whether items are pushed to Arcane.
@@ -136,6 +143,9 @@ func (c *Config) applyEnv(get func(string) string) error {
 	str(&c.EnvFile.Dir, "SECRET_SYNC_ENV_FILE_DIR")
 	str(&c.EnvFile.Name, "SECRET_SYNC_ENV_FILE_NAME")
 	str(&c.EnvFile.Mode, "SECRET_SYNC_ENV_FILE_MODE")
+	if err := boolean(&c.EnvFile.Enabled, "SECRET_SYNC_ENV_FILE_ENABLED"); err != nil {
+		return err
+	}
 	str(&c.Arcane.URL, "ARCANE_URL")
 	str(&c.Arcane.APIKeyFile, "ARCANE_API_KEY_FILE")
 	if err := boolean(&c.Arcane.Enabled, "ARCANE_ENABLED"); err != nil {

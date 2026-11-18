@@ -27,11 +27,15 @@ const (
 	// InjectField set to true injects the item's Arcane variables into every
 	// container's environment instead of only ${VAR} interpolation.
 	InjectField = "sync_arcane_inject_all"
+	// EnvFileField and ArcaneField opt an item out of the env file or Arcane
+	// sync when set to false; both default to true.
+	EnvFileField = "sync_env_file"
+	ArcaneField  = "sync_arcane"
 )
 
 func isControlField(name string) bool {
 	switch name {
-	case SyncField, GroupField, AgentsField, InjectField:
+	case SyncField, GroupField, AgentsField, InjectField, EnvFileField, ArcaneField:
 		return true
 	}
 	return false
@@ -75,6 +79,9 @@ type SyncedItem struct {
 	// ArcaneInject injects them into all containers.
 	Agents       []string
 	ArcaneInject bool
+	// SkipEnvFile and SkipArcane exclude the item from that target.
+	SkipEnvFile bool
+	SkipArcane  bool
 }
 
 // Targets returns the names consumers can reference in labels: the group, the
@@ -122,6 +129,15 @@ func Sanitize(name string) string {
 func truthy(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// falsy is true only for an explicit "no"; empty or unknown values keep the default.
+func falsy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "false", "0", "no", "off":
 		return true
 	}
 	return false
@@ -243,6 +259,12 @@ func (it Item) toSynced() (SyncedItem, []string, error) {
 	}
 	if v, ok := it.field(InjectField); ok && truthy(v) {
 		si.ArcaneInject = true
+	}
+	if v, ok := it.field(EnvFileField); ok && falsy(v) {
+		si.SkipEnvFile = true
+	}
+	if v, ok := it.field(ArcaneField); ok && falsy(v) {
+		si.SkipArcane = true
 	}
 	return si, groups, nil
 }

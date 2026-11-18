@@ -52,8 +52,9 @@ services:
       BW_PASSWORD_FILE: /run/secrets/bw_password
       DOCKER_HOST: tcp://docker-proxy:2375   # used to find the project directories
       SECRET_SYNC_ENV_FILE_DIR: /app/data/projects   # write <project>/.secrets
+      SECRET_SYNC_ENV_FILE_ENABLED: "true"           # central on/off switch for .secrets files
       # ARCANE_URL: https://arcane.example.com          # push items as Arcane variables
-      # ARCANE_ENABLED: "true"                           # central on/off switch
+      ARCANE_ENABLED: "true"                           # central on/off switch (needs ARCANE_URL)
       # ARCANE_API_KEY_FILE: /run/secrets/arcane_api_key
       # SECRET_SYNC_INTERVAL: 5m
       SECRET_SYNC_WEBHOOK_LISTEN: ":8080"

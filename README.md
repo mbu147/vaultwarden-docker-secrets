@@ -45,13 +45,16 @@ Add these **custom fields** to an item (type text or boolean):
 |---|---|---|
 | `sync_enabled` | yes | `true` (also `1`, `yes`, `on`) opts the item in. Missing or anything else: the item is ignored. |
 | `sync_group` | no | Group used as a label target. Comma-separated list (`mariadb, caddy`) puts the item into every listed group. No `/`, `\`, `.` or `..`. |
-| `sync_arcane_agents` | no | Comma-separated Arcane agent IDs the item's variables are limited to. Missing, empty or `all`: every agent. Only used with the [Arcane integration](#arcane-global-variables). |
+| `sync_arcane_agents` | no | Comma-separated Arcane environment names or IDs the item's variables are limited to. Missing, empty or `all`: every agent. Only used with the [Arcane integration](#arcane-global-variables). |
 | `sync_arcane_inject_all` | no | `true` injects the item's Arcane variables into every container's environment (default: only `${VAR}` interpolation). |
+| `sync_env_file` | no | `false` (also `0`, `no`, `off`) excludes the item from the `.secrets` env files, even if a container label requests it. Default: `true`. |
+| `sync_arcane` | no | `false` (also `0`, `no`, `off`) excludes the item from Arcane. Default: `true`, i.e. once `ARCANE_URL` and the API key are set, every synced item is pushed unless it opts out. |
 
 Each item yields the values `password`, `username`, `notes`, `uri` (first URI)
 and one per custom field. Empty values are skipped. Item names are sanitized:
 characters other than `A-Z a-z 0-9 . _ -` become `_`. `sync_enabled`,
-`sync_group`, `sync_arcane_agents` and `sync_arcane_inject_all` themselves are
+`sync_group`, `sync_arcane_agents`, `sync_arcane_inject_all`, `sync_env_file` and
+`sync_arcane` themselves are
 never synced. Two items that map to the same name, or a custom field that
 collides with another value name, are reported as errors and skipped.
 
@@ -135,8 +138,11 @@ to [Arcane](https://getarcane.app) as **global variables with the secret flag**
 secret-sync with `ARCANE_API_KEY_FILE` (preferred) or `ARCANE_API_KEY`.
 
 - `ARCANE_ENABLED=false` switches the integration off centrally, even with
-  `ARCANE_URL` set.
-- Restrict an item to agents with `sync_arcane_agents = agent-id-1, agent-id-2`;
+  `ARCANE_URL` set. Per item, `sync_arcane = false` opts out; everything else
+  is pushed to all agents unless `sync_arcane_agents` limits it.
+- Restrict an item to agents with `sync_arcane_agents = agent-a, agent-b`
+  (environment names as shown in Arcane, or IDs; unknown names are reported
+  with the list of known ones);
   without it (or with `all`) the variables apply to every agent.
 - Variable names follow the same scheme as the env file (`<ITEM>_<FILE>`).
 - Variables are created, or updated when the value changes. Arcane never returns
@@ -145,8 +151,12 @@ secret-sync with `ARCANE_API_KEY_FILE` (preferred) or `ARCANE_API_KEY`.
 - `sync_arcane_inject_all = true` on an item additionally injects its variables
   into every container's environment; by default they are only available for
   `${VAR}` interpolation in compose files.
-- Variables are **never deleted** (Arcane offers no marker for variables created
-  by secret-sync). Remove obsolete ones in Arcane.
+- Variables that disappear from the vault (item deleted, `sync_enabled` or
+  `sync_arcane` switched off, scope changed) are **deleted** in Arcane. Only
+  variables created by secret-sync are touched: it lists them in the plain
+  variable `SECRET_SYNC_MANAGED` (do not edit it). Variables that existed before
+  this list was created, or were created by hand, are never deleted; remove
+  such leftovers once manually. Nothing is deleted if the run had item errors.
 - Arcane's API paths (`/api/variables`, header `X-Api-Key`) were taken from its
   source; verify against your Arcane version.
 
@@ -184,6 +194,7 @@ win over the file.
 | `SECRET_SYNC_WEBHOOK_TOKEN_FILE` / `SECRET_SYNC_WEBHOOK_TOKEN` | `webhook.token_file` | – | Required with the webhook (file preferred) |
 | `DOCKER_HOST` | `docker.host` | default socket | `tcp://host:port` or `unix:///path` |
 | `SECRET_SYNC_ENV_FILE_DIR` | `env_file.dir` | off | Base directory of the Compose projects; enables the [env file](#env-file-per-compose-project) |
+| `SECRET_SYNC_ENV_FILE_ENABLED` | `env_file.enabled` | `true` | Central switch; `false` disables the env files even with a dir set |
 | `SECRET_SYNC_ENV_FILE_NAME` | `env_file.name` | `.secrets` | File name inside each project directory |
 | `SECRET_SYNC_ENV_FILE_MODE` | `env_file.mode` | `0600` | Octal file mode of the env file |
 | `ARCANE_URL` | `arcane.url` | off | Arcane base URL; enables the [Arcane integration](#arcane-global-variables) |

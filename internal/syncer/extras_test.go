@@ -81,19 +81,85 @@ type fakeVars struct {
 	vars    []arcane.Variable
 	created []arcane.Variable
 	updated []arcane.Variable
+	deleted []string
 }
 
 func (f *fakeVars) List(context.Context) ([]arcane.Variable, error) { return f.vars, nil }
+func (f *fakeVars) Environments(context.Context) ([]arcane.Environment, error) {
+	return []arcane.Environment{{ID: "id-a", Name: "A"}, {ID: "id-b", Name: "b"}}, nil
+}
 func (f *fakeVars) Create(_ context.Context, v arcane.Variable) error {
-	f.created = append(f.created, v)
-	f.vars = append(f.vars, arcane.Variable{ID: "id-" + v.Key, Key: v.Key, IsSecret: v.IsSecret,
+	if v.Key != manifestKey {
+		f.created = append(f.created, v)
+	}
+	f.vars = append(f.vars, arcane.Variable{ID: "id-" + v.Key + strings.Join(v.EnvironmentIDs, ","), Key: v.Key, Value: manifestValue(v), IsSecret: v.IsSecret,
 		AllEnvironments: v.AllEnvironments, EnvironmentIDs: v.EnvironmentIDs, InjectIntoContainers: v.InjectIntoContainers})
 	return nil
 }
 func (f *fakeVars) Update(_ context.Context, id string, v arcane.Variable) error {
 	v.ID = id
-	f.updated = append(f.updated, v)
+	for i := range f.vars {
+		if f.vars[i].ID == id {
+			f.vars[i].Value = manifestValue(v)
+		}
+	}
+	if v.Key != manifestKey {
+		f.updated = append(f.updated, v)
+	}
 	return nil
+}
+func (f *fakeVars) Delete(_ context.Context, id string) error {
+	f.deleted = append(f.deleted, id)
+	for i := range f.vars {
+		if f.vars[i].ID == id {
+			f.vars = append(f.vars[:i], f.vars[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+// manifestValue keeps only the non-secret manifest value, like Arcane does.
+func manifestValue(v arcane.Variable) string {
+	if v.Key == manifestKey {
+		return v.Value
+	}
+	return ""
+}
+
+func TestArcanePrune(t *testing.T) {
+	s, v, _ := setup(t, mkItem("db", "one", on), mkItem("old", "x", on))
+	fv := &fakeVars{vars: []arcane.Variable{{ID: "foreign", Key: "FOREIGN", AllEnvironments: true}}}
+	s.Variables = fv
+	ctx := context.Background()
+	if err := s.SyncOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	v.items = []bw.Item{mkItem("db", "one", on)}
+	if err := s.SyncOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fv.deleted) != 1 || fv.deleted[0] != "id-OLD_PASSWORD" {
+		t.Fatalf("deleted=%v", fv.deleted)
+	}
+	for _, x := range fv.vars {
+		if x.Key == "OLD_PASSWORD" {
+			t.Fatal("old variable still present")
+		}
+	}
+
+	// Removing the last item deletes it too; unmanaged variables stay.
+	v.items = nil
+	_ = s.SyncOnce(ctx)
+	if len(fv.deleted) != 2 || fv.deleted[1] != "id-DB_PASSWORD" {
+		t.Fatalf("deleted=%v", fv.deleted)
+	}
+	for _, x := range fv.vars {
+		if x.Key == "FOREIGN" {
+			return
+		}
+	}
+	t.Fatal("foreign variable was deleted")
 }
 
 func TestArcane(t *testing.T) {
@@ -116,7 +182,7 @@ func TestArcane(t *testing.T) {
 		}
 		switch c.Key {
 		case "DB_PASSWORD":
-			if c.AllEnvironments || strings.Join(c.EnvironmentIDs, ",") != "a,b" {
+			if c.AllEnvironments || strings.Join(c.EnvironmentIDs, ",") != "id-a,id-b" {
 				t.Fatalf("scope: %+v", c)
 			}
 		case "ALL_PASSWORD":

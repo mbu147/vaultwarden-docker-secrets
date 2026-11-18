@@ -96,10 +96,32 @@ func (c *Client) List(ctx context.Context) ([]Variable, error) {
 	return out.Data, nil
 }
 
+// Environment is an Arcane environment (the local one or a remote agent).
+type Environment struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Environments lists all environments.
+func (c *Client) Environments(ctx context.Context) ([]Environment, error) {
+	var out struct {
+		Data []Environment `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/environments?limit=1000", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
 // Create adds a variable.
 func (c *Client) Create(ctx context.Context, v Variable) error {
 	v.ID = ""
 	return c.do(ctx, http.MethodPost, "/api/variables", v, nil)
+}
+
+// Delete removes a variable.
+func (c *Client) Delete(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/variables/"+url.PathEscape(id), nil, nil)
 }
 
 // Update replaces value, secret flag, inject flag and scope of a variable.

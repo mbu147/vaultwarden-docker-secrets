@@ -108,6 +108,28 @@ func TestArcaneFieldsAndNames(t *testing.T) {
 	}
 }
 
+func TestOptOutFields(t *testing.T) {
+	v := &Vault{Items: []Item{
+		item("a", fld{"sync_enabled", "true"}, fld{"sync_env_file", "false"}, fld{"sync_arcane", "true"}),
+		item("b", fld{"sync_enabled", "true"}, fld{"sync_arcane", "No"}),
+		item("c", fld{"sync_enabled", "true"}, fld{"sync_arcane", ""}),
+	}}
+	got, errs := v.Synced()
+	if len(errs) != 0 || len(got) != 3 {
+		t.Fatalf("%v %v", got, errs)
+	}
+	if !got[0].SkipEnvFile || got[0].SkipArcane || got[1].SkipEnvFile || !got[1].SkipArcane || got[2].SkipArcane {
+		t.Fatalf("opt-out: %+v", got)
+	}
+	for _, g := range got {
+		for _, f := range g.Files {
+			if f.Name == "sync_arcane" || f.Name == "sync_env_file" {
+				t.Fatalf("control field synced: %s", f.Name)
+			}
+		}
+	}
+}
+
 func TestSanitize(t *testing.T) {
 	for in, want := range map[string]string{"a b/c": "a_b_c", "..x": "__x", "ok-1.2": "ok-1.2", "ä": "_"} {
 		if got := Sanitize(in); got != want {

@@ -28,6 +28,7 @@ docker:
 # carry the label secret-sync.env=<targets>. dir is the base directory that
 # contains the projects (mounted read-write at the same path).
 env_file:
+  enabled: true
   dir: /app/data/projects
   name: .secrets
   mode: "0600"

@@ -22,9 +22,13 @@ func TestDefaults(t *testing.T) {
 func TestFileAndEnv(t *testing.T) {
 	t.Setenv("SECRET_SYNC_ENV_FILE_MODE", "440")
 	t.Setenv("ARCANE_ENABLED", "false")
-	c, err := Parse([]byte("interval: 1m\narcane:\n  url: https://a.example\n"))
+	t.Setenv("SECRET_SYNC_ENV_FILE_ENABLED", "false")
+	c, err := Parse([]byte("interval: 1m\nenv_file:\n  dir: /p\narcane:\n  url: https://a.example\n"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if c.EnvFileEnabled() {
+		t.Fatal("env file must be off")
 	}
 	if c.Interval != time.Minute || c.ArcaneEnabled() || c.EnvFile.FileMode != os.FileMode(0o440) {
 		t.Fatalf("unexpected config: %+v", c)
