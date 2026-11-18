@@ -2,9 +2,9 @@
 
 `secret-sync` is a small container that downloads items from
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden) / Bitwarden with the
-`bw` CLI and writes them as files into a shared volume that your Docker Compose
-containers mount as secrets. It can **rotate** secrets automatically when they
-change in the vault and restart the affected containers.
+`bw` CLI and hands them to your Docker setup: as a `.secrets` dotenv file next
+to the Compose file of each consumer project, and/or as secret global variables
+in [Arcane](https://getarcane.app).
 
 > This is a sync sidecar, not a Kubernetes operator. On Kubernetes use the
 > [External Secrets Operator](https://external-secrets.io/) instead.
@@ -12,15 +12,11 @@ change in the vault and restart the affected containers.
 ## Features
 
 - **Opt-in per item**: only items with the custom field `sync_enabled = true`
-  are synced. No per-secret configuration, no labels.
-- **Directory per item**: `password`, `username`, `notes`, `uri` and every
-  custom field become files.
-- **Optional groups** (custom field `sync_group`) place items in a subdirectory, so
-  a consumer can mount only its own part of the volume.
-- **Rotation** (`rotate: true|false`): changed values are rewritten *in place*
-  (bind-mounted files stay valid); labeled containers are restarted.
-- **Pruning**: files disappear again when `sync_enabled` is removed, the item is
-  deleted or its group changes.
+  are synced. No per-secret configuration.
+- **`.secrets` env file** per Compose project, found through the Compose
+  working-dir label of labeled containers ([details](#env-file-per-compose-project)).
+- **Arcane integration**: items are pushed as secret global variables,
+  optionally restricted to agents ([details](#arcane-global-variables)).
 - **Sync triggers**: polling interval plus an authenticated webhook
   (`POST /sync`) for instant updates.
 - Configuration entirely through environment variables (config file optional);
@@ -30,17 +26,16 @@ change in the vault and restart the affected containers.
 ## How it works
 
 ```
-Vaultwarden --(bw CLI: sync + list items)--> secret-sync --> /secrets/[<group>/]<item>/<file>
-                                                       \--> restart labeled containers on rotation
+Vaultwarden --(bw CLI: sync + list items)--> secret-sync --> <project>/.secrets
+                                                       \--> Arcane global variables
 ```
 
 1. Logs in with a Bitwarden **API key** and unlocks the vault with the master
    password. Session data lives only in memory and a temporary directory.
 2. On every run it syncs the vault and selects all items with
    `sync_enabled = true`.
-3. It compares the SHA-256 of every value with the stored file. A new file is
-   created; a changed file is rewritten (if `rotate` is on) and the containers
-   labeled for it are restarted. Files that are no longer produced are removed.
+3. It writes the env files and pushes the Arcane variables, but only when a
+   value changed (SHA-256 comparison).
 
 ## Marking items in Vaultwarden
 
@@ -48,29 +43,17 @@ Add these **custom fields** to an item (type text or boolean):
 
 | Field | Required | Meaning |
 |---|---|---|
-| `sync_enabled` | yes | `true` (also `1`, `yes`, `on`) opts the item in. Missing or anything else: the item is ignored (and its files are removed). |
-| `sync_group` | no | Subdirectory for the item. Comma-separated list (`mariadb, caddy`) writes the item into every listed group. Missing or empty: no subdirectory. No `/`, `\`, `.` or `..`. |
+| `sync_enabled` | yes | `true` (also `1`, `yes`, `on`) opts the item in. Missing or anything else: the item is ignored. |
+| `sync_group` | no | Group used as a label target. Comma-separated list (`mariadb, caddy`) puts the item into every listed group. No `/`, `\`, `.` or `..`. |
+| `sync_arcane_agents` | no | Comma-separated Arcane agent IDs the item's variables are limited to. Missing, empty or `all`: every agent. Only used with the [Arcane integration](#arcane-global-variables). |
+| `sync_arcane_inject_all` | no | `true` injects the item's Arcane variables into every container's environment (default: only `${VAR}` interpolation). |
 
-Resulting layout (item names are sanitized: characters other than
-`A-Z a-z 0-9 . _ -` become `_`, leading dots are replaced):
-
-```
-/secrets/
-  mariadb/                 <- group (optional)
-    mariadb-root/          <- item name
-      password
-      username             <- only if not empty
-      notes
-      uri                  <- first URI
-      <custom field>       <- one file per custom field with a value
-  standalone-item/         <- item without group
-    password
-```
-
-`sync_enabled` and `sync_group` themselves are never written. Empty values are
-skipped. Two items that map to the same directory, or a custom field that
-collides with another file name, are reported as errors and skipped; pruning is
-suspended until the conflict is resolved.
+Each item yields the values `password`, `username`, `notes`, `uri` (first URI)
+and one per custom field. Empty values are skipped. Item names are sanitized:
+characters other than `A-Z a-z 0-9 . _ -` become `_`. `sync_enabled`,
+`sync_group`, `sync_arcane_agents` and `sync_arcane_inject_all` themselves are
+never synced. Two items that map to the same name, or a custom field that
+collides with another value name, are reported as errors and skipped.
 
 ## Quick start (Compose)
 
@@ -86,106 +69,89 @@ suspended until the conflict is resolved.
    with environment variables (see below); [examples/config.yaml](examples/config.yaml)
    is an optional alternative.
 4. Add `sync_enabled = true` (and optionally `sync_group`) to your items.
-5. Mount the volume in the consumer and wait for `service_healthy`:
+5. Label the consumers, see the next section.
+
+## Env file per Compose project
+
+For images without `*_FILE` support, secret-sync writes a dotenv file next to
+the Compose file of the consumer. Compose labels every container with
+`com.docker.compose.project.working_dir`; secret-sync reads it from containers
+that carry the label `secret-sync.env` and writes `<working_dir>/.secrets`. The
+label is a comma-separated list of targets:
+
+- `<group>`: every item of that group
+- `<group>/<item>`: only that item (sanitized item name)
+- `<item>`: an item without group
 
 ```yaml
 services:
-  mariadb:
-    image: mariadb:11
-    depends_on:
-      secret-sync:
-        condition: service_healthy
-    volumes:
-      - type: volume
-        source: secrets
-        target: /run/secrets
-        read_only: true
-        volume:
-          subpath: mariadb         # the item's group
-    environment:
-      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb-root/password
+  caddy:
+    env_file:
+      - path: .secrets
+        required: false      # lets the very first `up` succeed
     labels:
-      secret-sync.restart: "mariadb"
+      secret-sync.env: "caddy"
 ```
 
-`subpath` needs Compose >= 2.26 and Docker >= 26. Without a group (or without
-`subpath`) the files are at `/run/secrets/<item>/<file>`, resp.
-`/run/secrets/<group>/<item>/<file>`.
+Enable it by mounting the directory that contains all Compose projects
+**read-write at the same path Compose reports** (for example
+`/app/data/projects`) and setting `SECRET_SYNC_ENV_FILE_DIR` to it.
 
-## Restricting secrets to a group
+- Variable names are `<ITEM>_<FILE>` in upper case with every non-alphanumeric
+  character replaced by `_` (item `my db`, file `password` becomes
+  `MY_DB_PASSWORD`). All containers of a project share one file, which holds the
+  union of the items matched by their labels. Conflicting values for the same
+  name are errors.
+- Values are single-quoted (literal, no `$` interpolation); a value that contains
+  `'` is double-quoted with escapes (`$` becomes `$$`).
+- The file is written in place with mode `0600` (`SECRET_SYNC_ENV_FILE_MODE`).
+  Only directories below `SECRET_SYNC_ENV_FILE_DIR` are written; anything else
+  in a label is rejected, and symlinks or other non-regular files are never
+  followed.
+- A changed value updates the file but **does not restart** containers.
+  Environment variables are fixed at container creation and `docker restart`
+  does not re-read `env_file`; recreate the project (`docker compose up -d`, or
+  a redeploy in Arcane) to apply the change.
+- Containers must exist (running or created) for secret-sync to find the
+  project. With `required: false` the first `up` creates them without the file,
+  secret-sync then writes it, and the next recreate picks it up.
+- The file is plaintext on disk and is never deleted automatically. Its
+  readers are root (Docker/Compose) and the owner (UID 1000); make sure the
+  project directory is not readable by others. Add `.secrets` to `.gitignore`.
+  Arcane does not touch it (it only manages `.env`/`.env.global`).
 
-A shared volume exposes every file to every container that mounts it. Mounting
-`subpath: <group>` shows a consumer only its group. Several containers may share
-a group. Limits: this separates files, it is not a hard barrier. A container that
-mounts the whole volume, or anyone who can create containers or reach the Docker
-socket, can still read everything.
+## Arcane global variables
 
-## Sharing the volume across Compose projects
+With `ARCANE_URL` set, secret-sync pushes **every synced item** (`sync_enabled`)
+to [Arcane](https://getarcane.app) as **global variables with the secret flag**
+(values are encrypted at rest in Arcane, but written in plaintext to Arcane's
+`.env.global` on its agents). Create an API key in Arcane and give it to
+secret-sync with `ARCANE_API_KEY_FILE` (preferred) or `ARCANE_API_KEY`.
 
-The example sets `name: secrets` on the volume. Without it, Compose names the
-volume `<project>_secrets` and other projects cannot reach it. With the fixed
-name, `secret-sync` creates the volume, and consumers in any other Compose
-project attach to it:
-
-```yaml
-volumes:
-  secrets:
-    external: true
-```
-
-The top-level `volumes:` declaration is required in every consuming project,
-also when mounting with `subpath`; otherwise Compose fails with `refers to
-undefined volume secrets`. Start `secret-sync` first (there is no `depends_on`
-across projects); consumers that start earlier should use
-`restart: unless-stopped`.
-
-## Rotation and restarts
-
-| `rotate` | File missing | Value changed in vault |
-|---|---|---|
-| `true` (default) | created | rewritten, labeled containers restarted |
-| `false` | created | **kept**, a warning is logged |
-
-A newly created file never triggers a restart. Containers opt in with the label
-`secret-sync.restart`, a comma-separated list of targets:
-
-- `<group>`: any item of that group changed
-- `<group>/<item>`: only that item changed (sanitized item name)
-- `<item>`: an item without group changed
-
-```yaml
-labels:
-  secret-sync.restart: "mariadb, redis/cache"
-```
-
-Restarting needs Docker API access (`DOCKER_HOST` or the mounted socket), see
-below. Without it, rotations are still written and a warning is logged.
-
-## Pruning stale files
-
-With `prune: true` (default; `SECRET_SYNC_PRUNE=false` disables it) secret-sync
-keeps a list of the files it wrote (`.secret-sync-managed` in `secret_dir`) and
-removes those that a run no longer produces, plus emptied directories. This
-happens when
-
-- `sync_enabled` is removed or set to something other than true,
-- the item was deleted in Vaultwarden (or the service user lost access),
-- the item moved to another `sync_group` or was renamed,
-- a custom field was removed or emptied.
-
-Files it did not write are never touched. Nothing is removed when the vault
-fetch fails or when the run reports any error. Consumers keep an open file until
-restarted, but new reads fail once it is gone. Files left over from older
-versions are not in the manifest; delete them by hand (for example by
-recreating the volume: `docker compose down && docker volume rm secrets`).
+- `ARCANE_ENABLED=false` switches the integration off centrally, even with
+  `ARCANE_URL` set.
+- Restrict an item to agents with `sync_arcane_agents = agent-id-1, agent-id-2`;
+  without it (or with `all`) the variables apply to every agent.
+- Variable names follow the same scheme as the env file (`<ITEM>_<FILE>`).
+- Variables are created, or updated when the value changes. Arcane never returns
+  secret values, so secret-sync remembers a hash per variable in memory; after a
+  restart every variable is written once again.
+- `sync_arcane_inject_all = true` on an item additionally injects its variables
+  into every container's environment; by default they are only available for
+  `${VAR}` interpolation in compose files.
+- Variables are **never deleted** (Arcane offers no marker for variables created
+  by secret-sync). Remove obsolete ones in Arcane.
+- Arcane's API paths (`/api/variables`, header `X-Api-Key`) were taken from its
+  source; verify against your Arcane version.
 
 ## Docker socket access
 
-Only needed for restarts. Use a socket proxy as in the example. The proxy runs
-unprivileged, so it must be a member of the group that owns
-`/var/run/docker.sock` on the host (for example `999` or `992`). The example uses
-`992` by default via `${DOCKER_GID:-992}`. Override it in the environment or in
-an optional `.env` file next to `compose.yaml`:
+Only needed to list containers and read their Compose project directory (env
+file feature). Use a socket proxy as in the example; it only needs
+`GET /containers/json`. The proxy runs unprivileged, so it must be a member of
+the group that owns `/var/run/docker.sock` on the host (for example `999` or
+`992`). The example uses `992` by default via `${DOCKER_GID:-992}`. Override it
+in the environment or in an optional `.env` file next to `compose.yaml`:
 
 ```sh
 echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" > .env
@@ -193,18 +159,6 @@ echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" > .env
 
 Without it the proxy logs `socket not available ... permission denied`. See
 [examples/.env.example](examples/.env.example).
-
-## Using secrets as environment variables
-
-Environment variables are fixed when a container is created, so secret-sync
-cannot inject them. Prefer the `*_FILE` variables that many images support. For
-images without `*_FILE` support, read the file in the entrypoint (the image
-needs a shell; replace `/original-entrypoint` with the image's own entrypoint).
-Rotation restarts the container, so the new value is picked up:
-
-```yaml
-entrypoint: ["/bin/sh", "-c", "export DB_PASSWORD=$$(cat /run/secrets/app/password) && exec /original-entrypoint \"$$@\"", "--"]
-```
 
 ## Configuration
 
@@ -219,20 +173,22 @@ win over the file.
 | `BW_CLIENTSECRET_FILE` / `BW_CLIENTSECRET` | `bitwarden.client_secret_file` | – | API key secret |
 | `BW_PASSWORD_FILE` / `BW_PASSWORD` | `bitwarden.password_file` | – | Master password |
 | `SECRET_SYNC_INTERVAL` | `interval` | `5m` | Polling interval (min `10s`) |
-| `SECRET_SYNC_ROTATE` | `rotate` | `true` | Update existing files on change |
-| `SECRET_SYNC_PRUNE` | `prune` | `true` | Remove stale files |
-| `SECRET_SYNC_SECRET_DIR` | `secret_dir` | `/secrets` | Output directory |
-| `SECRET_SYNC_DATA_DIR` | `data_dir` | `/data` | bw CLI state: login and vault cache (encrypted by Bitwarden with the master key). If the vault is unreachable, secrets are written from this cache. It survives restarts only when a persistent volume is mounted here; otherwise a temp directory is used and the cache is rebuilt from the vault on every start |
-| `SECRET_SYNC_FILE_MODE` | `file_mode` | `0444` | Octal file mode |
-| `SECRET_SYNC_READY_FILE` | `ready_file` | `/tmp/secret-sync.ready` | Written after the first fully successful sync |
+| `SECRET_SYNC_DATA_DIR` | `data_dir` | `/data` | bw CLI state: login and vault cache (encrypted by Bitwarden with the master key). If the vault is unreachable, the cache is used. It survives restarts only when a persistent volume is mounted here; otherwise a temp directory is used and the cache is rebuilt from the vault on every start |
+| `SECRET_SYNC_READY_FILE` | `ready_file` | `/tmp/secret-sync.ready` | Written after a fully successful sync |
 | `SECRET_SYNC_WEBHOOK_LISTEN` | `webhook.listen` | off | e.g. `:8080` |
 | `SECRET_SYNC_WEBHOOK_TOKEN_FILE` | `webhook.token_file` | – | Required with the webhook |
 | `DOCKER_HOST` | `docker.host` | default socket | `tcp://host:port` or `unix:///path` |
+| `SECRET_SYNC_ENV_FILE_DIR` | `env_file.dir` | off | Base directory of the Compose projects; enables the [env file](#env-file-per-compose-project) |
+| `SECRET_SYNC_ENV_FILE_NAME` | `env_file.name` | `.secrets` | File name inside each project directory |
+| `SECRET_SYNC_ENV_FILE_MODE` | `env_file.mode` | `0600` | Octal file mode of the env file |
+| `ARCANE_URL` | `arcane.url` | off | Arcane base URL; enables the [Arcane integration](#arcane-global-variables) |
+| `ARCANE_API_KEY_FILE` / `ARCANE_API_KEY` | `arcane.api_key_file` | – | Arcane API key (file preferred) |
+| `ARCANE_ENABLED` | `arcane.enabled` | `true` | Central on/off switch; only effective with `ARCANE_URL` |
 | `SECRET_SYNC_LOG_LEVEL` | – | `info` | `debug`, `info`, `warn`, `error` |
 | `SECRET_SYNC_LOG_FORMAT` | – | `text` | `text` or `json` |
 
-Secret values are never logged; only file names and the first 8 characters of
-the hash.
+Secret values are never logged; only names and the first 8 characters of the
+hash.
 
 ### Instant updates
 

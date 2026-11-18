@@ -79,6 +79,35 @@ func TestSyncedMultipleGroups(t *testing.T) {
 	}
 }
 
+func TestArcaneFieldsAndNames(t *testing.T) {
+	v := &Vault{Items: []Item{
+		item("my db", fld{"sync_enabled", "true"}, fld{"sync_arcane_inject_all", "true"}, fld{"sync_arcane_agents", "b, a, b"}, fld{"api-key", "k"}),
+		item("every", fld{"sync_enabled", "true"}, fld{"sync_arcane_agents", "x, ALL"}),
+		item("plain", fld{"sync_enabled", "true"}),
+	}}
+	got, errs := v.Synced()
+	if len(errs) != 0 || len(got) != 3 {
+		t.Fatalf("%v %v", got, errs)
+	}
+	if !got[0].ArcaneInject || len(got[0].Agents) != 2 || got[0].Agents[0] != "a" || got[0].Agents[1] != "b" {
+		t.Fatalf("agents: %+v", got[0])
+	}
+	if got[1].ArcaneInject || got[1].Agents != nil || got[2].ArcaneInject {
+		t.Fatalf("all agents: %+v", got[1])
+	}
+	for _, f := range got[0].Files {
+		if f.Name == "sync_arcane_agents" || f.Name == "sync_arcane_inject_all" {
+			t.Fatalf("control field written: %s", f.Name)
+		}
+	}
+	if n := got[0].EnvName("api-key"); n != "MY_DB_API_KEY" {
+		t.Fatal(n)
+	}
+	if n := (SyncedItem{Dir: "1x"}).EnvName("pw"); n != "_1X_PW" {
+		t.Fatal(n)
+	}
+}
+
 func TestSanitize(t *testing.T) {
 	for in, want := range map[string]string{"a b/c": "a_b_c", "..x": "__x", "ok-1.2": "ok-1.2", "ä": "_"} {
 		if got := Sanitize(in); got != want {

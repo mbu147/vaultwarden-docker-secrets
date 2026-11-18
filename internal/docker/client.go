@@ -94,10 +94,10 @@ type Container struct {
 	Labels map[string]string `json:"Labels"`
 }
 
-// ListContainers returns running containers matching a label filter
-// ("key" or "key=value"; empty for all).
+// ListContainers returns all containers (including stopped and created ones)
+// matching a label filter ("key" or "key=value"; empty for all).
 func (c *Client) ListContainers(ctx context.Context, label string) ([]Container, error) {
-	q := url.Values{}
+	q := url.Values{"all": {"1"}}
 	if label != "" {
 		f, _ := json.Marshal(map[string][]string{"label": {label}})
 		q.Set("filters", string(f))
@@ -105,9 +105,4 @@ func (c *Client) ListContainers(ctx context.Context, label string) ([]Container,
 	var out []Container
 	err := c.do(ctx, http.MethodGet, "/containers/json", q, nil, &out)
 	return out, err
-}
-
-// RestartContainer restarts a container by ID or name.
-func (c *Client) RestartContainer(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/restart", nil, nil, nil)
 }

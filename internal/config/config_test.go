@@ -11,22 +11,22 @@ func TestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Interval != 5*time.Minute || c.SecretDir != "/secrets" || c.Mode != 0o444 {
+	if c.Interval != 5*time.Minute || c.EnvFile.Name != ".secrets" || c.EnvFile.FileMode != 0o600 {
 		t.Fatalf("bad defaults: %+v", c)
 	}
-	if !c.RotateEnabled() || !c.PruneEnabled() {
-		t.Fatal("rotate and prune must default to true")
+	if c.ArcaneEnabled() {
+		t.Fatal("arcane must be off without url")
 	}
 }
 
 func TestFileAndEnv(t *testing.T) {
-	t.Setenv("SECRET_SYNC_ROTATE", "false")
-	t.Setenv("SECRET_SYNC_FILE_MODE", "440")
-	c, err := Parse([]byte("interval: 1m\nrotate: true\nprune: false\n"))
+	t.Setenv("SECRET_SYNC_ENV_FILE_MODE", "440")
+	t.Setenv("ARCANE_ENABLED", "false")
+	c, err := Parse([]byte("interval: 1m\narcane:\n  url: https://a.example\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Interval != time.Minute || c.RotateEnabled() || c.PruneEnabled() || c.Mode != os.FileMode(0o440) {
+	if c.Interval != time.Minute || c.ArcaneEnabled() || c.EnvFile.FileMode != os.FileMode(0o440) {
 		t.Fatalf("unexpected config: %+v", c)
 	}
 }
@@ -36,7 +36,7 @@ func TestInvalid(t *testing.T) {
 		"old secrets key": "secrets:\n  - name: x\n",
 		"short interval":  "interval: 1s\n",
 		"webhook token":   "webhook:\n  listen: ':8080'\n",
-		"bad mode":        "file_mode: rw\n",
+		"bad mode":        "env_file:\n  mode: rw\n",
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: expected error", name)

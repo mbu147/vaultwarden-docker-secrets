@@ -1,12 +1,12 @@
 # Security notes
 
-`secret-sync` holds the credentials to your vault and can write to your
-containers' secrets, so treat it as a high-value component.
+`secret-sync` holds the credentials to your vault and can write secrets into
+your Compose projects and Arcane, so treat it as a high-value component.
 
 ## Vaultwarden side
 
 - Create a **dedicated user** for secret-sync. Do not use a personal account.
-- Only items with the custom field `sync_enabled = true` are written, so the
+- Only items with the custom field `sync_enabled = true` are synced, so the
   service user may see more items than are exposed. Still share only the needed
   items through an **organization collection** with read-only access. The tool
   only ever reads.
@@ -25,22 +25,34 @@ containers' secrets, so treat it as a high-value component.
 
 ## Docker access
 
-- The Docker socket is only needed to restart labeled containers after a
-  rotation, and is only used then.
+- The Docker socket is only used to list containers and read their Compose
+  project directory. Containers are never started, stopped or restarted.
 - Access the Docker API through
   [socket-proxy](https://github.com/wollomatic/socket-proxy) and
   grant only what you need (see [examples/compose.yaml](../examples/compose.yaml)).
   Mounting the raw socket is equivalent to root on the host.
+- The env file feature and the label `secret-sync.env` need container listing
+  including stopped containers (`GET /containers/json?all=1`), which the
+  example proxy rule already permits.
+
+## Env files and Arcane
+
+- The env file feature needs a **read-write** mount of the directory with all
+  Compose projects. A compromised secret-sync could then modify project files,
+  so only writes below `env_file.dir` are made, to one fixed file name, never
+  through symlinks. The directory taken from the container label is validated;
+  anyone who can create containers can still cause that one file to be written
+  in any project below `env_file.dir`.
+- `.secrets` holds plaintext values (mode `0600`) and environment variables are
+  visible via `docker inspect`. Prefer `*_FILE` secrets where images support it.
+- Arcane variables flagged secret are encrypted in Arcane's database, but Arcane
+  writes them in plaintext to `.env.global` on its agents. The Arcane API key can
+  manage all variables; store it as a Docker secret, not as an environment
+  variable. Variables are never deleted by secret-sync.
 
 ## Container hardening
 
 - Run `read_only: true`, `cap_drop: [ALL]`, `no-new-privileges`, non-root user.
-- Put the shared secrets volume on tmpfs so values are never written to disk.
-- Default file mode is `0444` because consumers usually run as a different user
-  than secret-sync. Keep the shared secrets volume on tmpfs and mount it only
-  into the consumers that need it, ideally with `subpath: <group>` so each
-  consumer sees only its group. Set `file_mode: "0400"` for stricter access if
-  the consumer runs as the same user.
 - The webhook requires a bearer token. Bind it to an internal network or
   localhost and put TLS in front if it is reachable from outside.
 

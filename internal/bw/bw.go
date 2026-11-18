@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -21,7 +22,21 @@ const (
 	SyncField = "sync_enabled"
 	// GroupField optionally places the item below a subdirectory.
 	GroupField = "sync_group"
+	// AgentsField optionally restricts the Arcane variables to the listed agent
+	// IDs (comma-separated). "all" or an empty value means every agent.
+	AgentsField = "sync_arcane_agents"
+	// InjectField set to true injects the item's Arcane variables into every
+	// container's environment instead of only ${VAR} interpolation.
+	InjectField = "sync_arcane_inject_all"
 )
+
+func isControlField(name string) bool {
+	switch name {
+	case SyncField, GroupField, AgentsField, InjectField:
+		return true
+	}
+	return false
+}
 
 // Item is the subset of a Bitwarden item that secret-sync needs.
 type Item struct {
@@ -57,9 +72,35 @@ type SyncedItem struct {
 	Group string // optional subdirectory
 	Dir   string // sanitized item name
 	Files []File
+	// Agents limits the Arcane variables to these agent IDs (empty means all);
+	// ArcaneInject injects them into all containers.
+	Agents       []string
+	ArcaneInject bool
 }
 
-// RelPath returns the slash separated path of a file below the secret dir.
+// Targets returns the names consumers can reference in labels: the group, the
+// "<group>/<item>" pair, or just the item for items without a group.
+func (s SyncedItem) Targets() []string {
+	if s.Group == "" {
+		return []string{s.Dir}
+	}
+	return []string{s.Group, s.Group + "/" + s.Dir}
+}
+
+var nonEnvRe = regexp.MustCompile(`[^A-Za-z0-9]+`)
+
+// EnvName returns the environment variable name of a file: the upper-cased
+// item and file names joined by "_", non-alphanumerics replaced by "_".
+func (s SyncedItem) EnvName(file string) string {
+	n := strings.ToUpper(nonEnvRe.ReplaceAllString(s.Dir+"_"+file, "_"))
+	n = strings.Trim(n, "_")
+	if n == "" || (n[0] >= '0' && n[0] <= '9') {
+		n = "_" + n
+	}
+	return n
+}
+
+// RelPath returns the slash separated "<group>/<item>/<file>" identifier.
 func (s SyncedItem) RelPath(file string) string {
 	if s.Group == "" {
 		return s.Dir + "/" + file
@@ -172,7 +213,7 @@ func (it Item) toSynced() (SyncedItem, []string, error) {
 		used[f.Name] = true
 	}
 	for _, f := range it.Fields {
-		if f.Name == SyncField || f.Name == GroupField || f.Value == "" {
+		if isControlField(f.Name) || f.Value == "" {
 			continue
 		}
 		name := Sanitize(f.Name)
@@ -184,6 +225,25 @@ func (it Item) toSynced() (SyncedItem, []string, error) {
 		}
 		used[name] = true
 		add(name, f.Value)
+	}
+	if raw, ok := it.field(AgentsField); ok {
+		seen := map[string]bool{}
+		for _, a := range strings.Split(raw, ",") {
+			a = strings.TrimSpace(a)
+			if a == "" || seen[a] {
+				continue
+			}
+			if strings.EqualFold(a, "all") {
+				si.Agents = nil
+				break
+			}
+			seen[a] = true
+			si.Agents = append(si.Agents, a)
+		}
+		sort.Strings(si.Agents)
+	}
+	if v, ok := it.field(InjectField); ok && truthy(v) {
+		si.ArcaneInject = true
 	}
 	return si, groups, nil
 }

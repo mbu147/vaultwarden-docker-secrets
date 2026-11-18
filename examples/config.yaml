@@ -13,22 +13,10 @@ bitwarden:
 # How often to poll Vaultwarden (minimum 10s).
 interval: 5m
 
-# true:  update existing files when the vault value changes and restart
-#        labeled containers
-# false: write once and never overwrite (changes are only logged)
-rotate: true
-
-# Remove files that secret-sync wrote earlier but no longer produces (item
-# deleted, sync_enabled removed, group changed).
-prune: true
-
-secret_dir: /secrets
-
 # bw CLI state (login + vault cache encrypted by Bitwarden), used while the vault
 # is unreachable. Mount a volume here to keep it across restarts; without one it
 # is rebuilt from the vault on every start.
 # data_dir: /data
-file_mode: "0444"
 
 # Optional: trigger an immediate sync with
 #   curl -X POST -H "Authorization: Bearer <token>" http://secret-sync:8080/sync
@@ -36,7 +24,23 @@ webhook:
   listen: ":8080"
   token_file: /run/secrets/sync_webhook_token
 
-# Only used to restart containers after a rotation. Prefer a socket proxy over
-# mounting the Docker socket directly.
+# Used to find the project directories of labeled containers. Prefer a socket
+# proxy over mounting the Docker socket directly.
 docker:
   host: tcp://docker-proxy:2375
+
+# Write <working_dir>/.secrets for Compose projects whose containers
+# carry the label secret-sync.env=<targets>. dir is the base directory that
+# contains the projects (mounted read-write at the same path).
+env_file:
+  dir: /app/data/projects
+  name: .secrets
+  mode: "0600"
+
+# Optional: push all synced items to Arcane as secret global variables.
+# Per item, sync_arcane_agents=<id>,<id> limits them to agents and
+# sync_arcane_inject_all=true injects them into all containers.
+# arcane:
+#   url: https://arcane.example.com
+#   api_key_file: /run/secrets/arcane_api_key
+#   enabled: true

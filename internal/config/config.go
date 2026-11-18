@@ -18,24 +18,15 @@ import (
 type Config struct {
 	Bitwarden Bitwarden     `yaml:"bitwarden"`
 	Interval  time.Duration `yaml:"interval"`
-	// Rotate controls whether an existing secret is updated when its value
-	// changes in the vault. Default true.
-	Rotate *bool `yaml:"rotate"`
-	// Prune removes files secret-sync wrote earlier but no longer produces
-	// (item deleted, sync_enabled removed, group changed). Default true.
-	Prune     *bool  `yaml:"prune"`
-	SecretDir string `yaml:"secret_dir"`
 	// DataDir holds the bw CLI state: login and encrypted vault cache (default
 	// /data). It survives restarts only if it is a mount point; otherwise a temp
 	// directory is used and the cache is rebuilt on every start.
 	DataDir   string  `yaml:"data_dir"`
 	ReadyFile string  `yaml:"ready_file"`
-	FileMode  string  `yaml:"file_mode"`
 	Webhook   Webhook `yaml:"webhook"`
 	Docker    Docker  `yaml:"docker"`
-
-	// Mode is FileMode parsed (default 0444).
-	Mode os.FileMode `yaml:"-"`
+	EnvFile   EnvFile `yaml:"env_file"`
+	Arcane    Arcane  `yaml:"arcane"`
 }
 
 // Bitwarden holds connection and credential settings. Credentials are read
@@ -53,21 +44,40 @@ type Webhook struct {
 	TokenFile string `yaml:"token_file"`
 }
 
-// Docker configures access to the Docker Engine API (used to restart
-// containers after a rotation).
+// Docker configures access to the Docker Engine API (used to find Compose
+// projects for the env file).
 type Docker struct {
 	// Host is unix:///path or tcp://host:port. Empty means the default socket.
 	Host string `yaml:"host"`
 }
 
-// PruneEnabled reports whether stale files are removed (default true).
-func (c *Config) PruneEnabled() bool {
-	return c.Prune == nil || *c.Prune
+// EnvFile configures writing dotenv files into Compose project directories.
+// It is enabled when Dir is set.
+type EnvFile struct {
+	// Dir is the base directory that contains the Compose projects (mounted
+	// into secret-sync at the same path Compose reports as working_dir). Only
+	// projects below it are written.
+	Dir string `yaml:"dir"`
+	// Name of the file inside each project directory (default .secrets).
+	Name string `yaml:"name"`
+	// Mode is the octal file mode (default 0600).
+	Mode string `yaml:"mode"`
+
+	FileMode os.FileMode `yaml:"-"`
 }
 
-// RotateEnabled reports whether existing secrets may be updated (default true).
-func (c *Config) RotateEnabled() bool {
-	return c.Rotate == nil || *c.Rotate
+// Arcane configures the push of synced items to Arcane global variables. It
+// is enabled when URL is set, unless Enabled is false.
+type Arcane struct {
+	URL        string `yaml:"url"`
+	APIKeyFile string `yaml:"api_key_file"`
+	// Enabled is a central switch (default true when URL is set).
+	Enabled *bool `yaml:"enabled"`
+}
+
+// ArcaneEnabled reports whether items are pushed to Arcane.
+func (c *Config) ArcaneEnabled() bool {
+	return c.Arcane.URL != "" && (c.Arcane.Enabled == nil || *c.Arcane.Enabled)
 }
 
 // Load reads the optional configuration file, applies environment variable
@@ -123,13 +133,19 @@ func (c *Config) applyEnv(get func(string) string) error {
 	str(&c.Bitwarden.ClientIDFile, "BW_CLIENTID_FILE")
 	str(&c.Bitwarden.ClientSecretFile, "BW_CLIENTSECRET_FILE")
 	str(&c.Bitwarden.PasswordFile, "BW_PASSWORD_FILE")
-	str(&c.SecretDir, "SECRET_SYNC_SECRET_DIR")
 	str(&c.DataDir, "SECRET_SYNC_DATA_DIR")
 	str(&c.ReadyFile, "SECRET_SYNC_READY_FILE")
-	str(&c.FileMode, "SECRET_SYNC_FILE_MODE")
 	str(&c.Webhook.Listen, "SECRET_SYNC_WEBHOOK_LISTEN")
 	str(&c.Webhook.TokenFile, "SECRET_SYNC_WEBHOOK_TOKEN_FILE")
 	str(&c.Docker.Host, "DOCKER_HOST")
+	str(&c.EnvFile.Dir, "SECRET_SYNC_ENV_FILE_DIR")
+	str(&c.EnvFile.Name, "SECRET_SYNC_ENV_FILE_NAME")
+	str(&c.EnvFile.Mode, "SECRET_SYNC_ENV_FILE_MODE")
+	str(&c.Arcane.URL, "ARCANE_URL")
+	str(&c.Arcane.APIKeyFile, "ARCANE_API_KEY_FILE")
+	if err := boolean(&c.Arcane.Enabled, "ARCANE_ENABLED"); err != nil {
+		return err
+	}
 
 	if v := get("SECRET_SYNC_INTERVAL"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -138,10 +154,7 @@ func (c *Config) applyEnv(get func(string) string) error {
 		}
 		c.Interval = d
 	}
-	if err := boolean(&c.Rotate, "SECRET_SYNC_ROTATE"); err != nil {
-		return err
-	}
-	return boolean(&c.Prune, "SECRET_SYNC_PRUNE")
+	return nil
 }
 
 func (c *Config) applyDefaults() error {
@@ -154,22 +167,28 @@ func (c *Config) applyDefaults() error {
 	if c.DataDir == "" {
 		c.DataDir = "/data"
 	}
-	if c.SecretDir == "" {
-		c.SecretDir = "/secrets"
-	}
 	if c.ReadyFile == "" {
 		c.ReadyFile = "/tmp/secret-sync.ready"
 	}
 	if c.Webhook.Listen != "" && c.Webhook.TokenFile == "" {
 		return fmt.Errorf("webhook.token_file is required when webhook.listen is set")
 	}
-	c.Mode = 0o444
-	if c.FileMode != "" {
-		m, err := strconv.ParseUint(c.FileMode, 8, 32)
+	if c.EnvFile.Name == "" {
+		c.EnvFile.Name = ".secrets"
+	}
+	if strings.ContainsAny(c.EnvFile.Name, `/\`) || c.EnvFile.Name == "." || c.EnvFile.Name == ".." {
+		return fmt.Errorf("invalid env_file.name %q", c.EnvFile.Name)
+	}
+	c.EnvFile.FileMode = 0o600
+	if c.EnvFile.Mode != "" {
+		m, err := strconv.ParseUint(c.EnvFile.Mode, 8, 32)
 		if err != nil {
-			return fmt.Errorf("invalid file_mode %q", c.FileMode)
+			return fmt.Errorf("invalid env_file.mode %q", c.EnvFile.Mode)
 		}
-		c.Mode = os.FileMode(m)
+		c.EnvFile.FileMode = os.FileMode(m)
+	}
+	if c.Arcane.URL != "" && !strings.HasPrefix(c.Arcane.URL, "http://") && !strings.HasPrefix(c.Arcane.URL, "https://") {
+		return fmt.Errorf("arcane.url must start with http:// or https://")
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mbu147/vaultwarden-docker-secrets/internal/arcane"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/bw"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/config"
 	"github.com/mbu147/vaultwarden-docker-secrets/internal/docker"
@@ -106,7 +107,15 @@ func run(cfgPath string, once, health bool) error {
 	}
 
 	s := syncer.New(cfg, client, containers)
-	slog.Info("secret-sync started", "version", version, "interval", cfg.Interval, "restarts", containers != nil)
+	if cfg.ArcaneEnabled() {
+		key, err := config.ReadCredential(cfg.Arcane.APIKeyFile, "ARCANE_API_KEY")
+		if err != nil {
+			return fmt.Errorf("arcane api key: %w", err)
+		}
+		s.Variables = arcane.New(cfg.Arcane.URL, key)
+	}
+	slog.Info("secret-sync started", "version", version, "interval", cfg.Interval, "docker", containers != nil,
+		"env_files", cfg.EnvFile.Dir != "", "arcane", s.Variables != nil)
 
 	if once {
 		return s.SyncOnce(ctx)
@@ -164,7 +173,7 @@ func loginWithRetry(ctx context.Context, c *bw.Client, once bool) error {
 	}
 }
 
-// dockerAvailable reports whether restarts can be attempted: a Docker host is
+// dockerAvailable reports whether containers can be listed: a Docker host is
 // configured or the default socket is mounted.
 func dockerAvailable(cfg *config.Config) bool {
 	if cfg.Docker.Host != "" {

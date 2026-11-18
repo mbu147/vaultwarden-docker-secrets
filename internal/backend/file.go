@@ -30,7 +30,7 @@ func Hash(value []byte) string {
 func (f *File) path(rel string) (string, error) {
 	p := filepath.Join(f.Dir, filepath.Clean("/"+filepath.FromSlash(rel)))
 	if !strings.HasPrefix(p, filepath.Clean(f.Dir)) {
-		return "", fmt.Errorf("path %q escapes secret_dir", rel)
+		return "", fmt.Errorf("path %q escapes base directory", rel)
 	}
 	return p, nil
 }

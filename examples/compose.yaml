@@ -1,5 +1,5 @@
-# Docker Compose example: secret-sync writes secrets into a shared tmpfs volume
-# that consumer containers mount read-only. Nothing is stored on disk.
+# Docker Compose example: secret-sync writes a .secrets dotenv file into
+# Compose projects and/or pushes items to Arcane as global variables.
 services:
   docker-proxy:
     image: ghcr.io/wollomatic/socket-proxy:1
@@ -16,7 +16,6 @@ services:
       - "-listenip=0.0.0.0"
       - "-allowfrom=secret-sync"   # container name of secret-sync, nothing else may connect
       - "-allowGET=/containers/json"
-      - "-allowPOST=/containers/[^/]+/restart"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [sync]
@@ -33,9 +32,13 @@ services:
       - /tmp:uid=1000,gid=1000,mode=0700
     volumes:
       - ./config/config.yaml:/etc/secret-sync/config.yaml:ro   # optional
-      - secrets:/secrets
-      # - sync-data:/data   # keeps the vault cache across restarts (declare volume sync-data)
-    secrets: [bw_client_id, bw_client_secret, bw_password, sync_webhook_token]
+      # Keeps the vault cache across restarts; the volume must be writable by
+      # UID 1000 (declare it under volumes: and chown it once).
+      # - sync-data:/data
+      # All Compose projects, read-write, at the same path Compose reports as
+      # working_dir (see README).
+      - /app/data/projects:/app/data/projects
+    secrets: [bw_client_id, bw_client_secret, bw_password, sync_webhook_token]   # add arcane_api_key for Arcane
     environment:
       # Avoid a chicken-and-egg problem: if the vault is only reachable through a
       # reverse proxy that itself needs a synced secret, bypass the proxy. bw
@@ -47,9 +50,12 @@ services:
       BW_CLIENTID_FILE: /run/secrets/bw_client_id
       BW_CLIENTSECRET_FILE: /run/secrets/bw_client_secret
       BW_PASSWORD_FILE: /run/secrets/bw_password
-      DOCKER_HOST: tcp://docker-proxy:2375   # only needed for restarts
+      DOCKER_HOST: tcp://docker-proxy:2375   # used to find the project directories
+      SECRET_SYNC_ENV_FILE_DIR: /app/data/projects   # write <project>/.secrets
+      # ARCANE_URL: https://arcane.example.com          # push items as Arcane variables
+      # ARCANE_ENABLED: "true"                           # central on/off switch
+      # ARCANE_API_KEY_FILE: /run/secrets/arcane_api_key
       # SECRET_SYNC_INTERVAL: 5m
-      # SECRET_SYNC_ROTATE: "true"
       SECRET_SYNC_WEBHOOK_LISTEN: ":8080"
       SECRET_SYNC_WEBHOOK_TOKEN_FILE: /run/secrets/sync_webhook_token
     healthcheck:
@@ -59,45 +65,15 @@ services:
       retries: 6
     networks: [sync]
 
-  # Example consumer. In Vaultwarden the item "mariadb-root" has the custom
-  # fields sync_enabled=true and sync_group=mariadb, which creates
-  # /secrets/mariadb/mariadb-root/password.
-  mariadb:
-    image: mariadb:11
-    # Wait until the first sync has written all secrets.
-    depends_on:
-      secret-sync:
-        condition: service_healthy
-    volumes:
-      - type: volume
-        source: secrets
-        target: /run/secrets          # sees only the "mariadb" group
-        read_only: true
-        volume:
-          subpath: mariadb
-    environment:
-      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb-root/password
-    labels:
-      # Restart this container when a secret of the group "mariadb" changes.
-      # Optional; use "<group>/<item>" to react to a single item only.
-      secret-sync.restart: "mariadb"
-
-volumes:
-  secrets:
-    # Fixed name: without it Compose names the volume <project>_secrets. With it,
-    # consumers in other compose projects can mount it as an external volume.
-    name: secrets
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: uid=1000,gid=1000,mode=0755
-
-# Consumers in OTHER compose projects declare the same volume as external
-# (the volume is created by this file, so start secret-sync first):
-# volumes:
-#   secrets:
-#     external: true
+  # Example consumer: items with a matching group or name end up in this
+  # project's .secrets file. Changes apply on recreate (docker compose up -d).
+  # caddy:
+  #   image: caddy:2
+  #   env_file:
+  #     - path: .secrets
+  #       required: false   # lets the first `up` succeed before the file exists
+  #   labels:
+  #     secret-sync.env: "caddy"   # group, group/item or item
 
 networks:
   sync: {}
@@ -112,3 +88,5 @@ secrets:
     file: ./bootstrap/bw_password
   sync_webhook_token:
     file: ./bootstrap/sync_webhook_token
+  # arcane_api_key:
+  #   file: ./bootstrap/arcane_api_key
