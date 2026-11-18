@@ -60,7 +60,7 @@ services:
     networks: [sync]
 
   # Example consumer. In Vaultwarden the item "mariadb-root" has the custom
-  # fields sync_enabled=true and group=mariadb, which creates
+  # fields sync_enabled=true and sync_group=mariadb, which creates
   # /secrets/mariadb/mariadb-root/password.
   mariadb:
     image: mariadb:11

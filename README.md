@@ -15,7 +15,7 @@ change in the vault and restart the affected containers.
   are synced. No per-secret configuration, no labels.
 - **Directory per item**: `password`, `username`, `notes`, `uri` and every
   custom field become files.
-- **Optional groups** (custom field `group`) place items in a subdirectory, so
+- **Optional groups** (custom field `sync_group`) place items in a subdirectory, so
   a consumer can mount only its own part of the volume.
 - **Rotation** (`rotate: true|false`): changed values are rewritten *in place*
   (bind-mounted files stay valid); labeled containers are restarted.
@@ -49,7 +49,7 @@ Add these **custom fields** to an item (type text or boolean):
 | Field | Required | Meaning |
 |---|---|---|
 | `sync_enabled` | yes | `true` (also `1`, `yes`, `on`) opts the item in. Missing or anything else: the item is ignored (and its files are removed). |
-| `group` | no | Subdirectory for the item. Comma-separated list (`mariadb, caddy`) writes the item into every listed group. Missing or empty: no subdirectory. No `/`, `\`, `.` or `..`. |
+| `sync_group` | no | Subdirectory for the item. Comma-separated list (`mariadb, caddy`) writes the item into every listed group. Missing or empty: no subdirectory. No `/`, `\`, `.` or `..`. |
 
 Resulting layout (item names are sanitized: characters other than
 `A-Z a-z 0-9 . _ -` become `_`, leading dots are replaced):
@@ -67,7 +67,7 @@ Resulting layout (item names are sanitized: characters other than
     password
 ```
 
-`sync_enabled` and `group` themselves are never written. Empty values are
+`sync_enabled` and `sync_group` themselves are never written. Empty values are
 skipped. Two items that map to the same directory, or a custom field that
 collides with another file name, are reported as errors and skipped; pruning is
 suspended until the conflict is resolved.
@@ -85,7 +85,7 @@ suspended until the conflict is resolved.
 3. Start [examples/compose.yaml](examples/compose.yaml). Configuration is done
    with environment variables (see below); [examples/config.yaml](examples/config.yaml)
    is an optional alternative.
-4. Add `sync_enabled = true` (and optionally `group`) to your items.
+4. Add `sync_enabled = true` (and optionally `sync_group`) to your items.
 5. Mount the volume in the consumer and wait for `service_healthy`:
 
 ```yaml
@@ -170,7 +170,7 @@ happens when
 
 - `sync_enabled` is removed or set to something other than true,
 - the item was deleted in Vaultwarden (or the service user lost access),
-- the item moved to another `group` or was renamed,
+- the item moved to another `sync_group` or was renamed,
 - a custom field was removed or emptied.
 
 Files it did not write are never touched. Nothing is removed when the vault

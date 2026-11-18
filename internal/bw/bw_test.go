@@ -31,8 +31,8 @@ func TestSyncedOptIn(t *testing.T) {
 	v := &Vault{Items: []Item{
 		item("off"),
 		item("explicit-off", fld{"sync_enabled", "false"}),
-		item("My DB", fld{"sync_enabled", "true"}, fld{"group", " mariadb "}, fld{"api token", "t"}, fld{"empty", ""}),
-		item("plain", fld{"sync_enabled", "TRUE"}, fld{"group", ""}),
+		item("My DB", fld{"sync_enabled", "true"}, fld{"sync_group", " mariadb "}, fld{"api token", "t"}, fld{"empty", ""}),
+		item("plain", fld{"sync_enabled", "TRUE"}, fld{"sync_group", ""}),
 	}}
 	got, errs := v.Synced()
 	if len(errs) != 0 || len(got) != 2 {
@@ -49,7 +49,7 @@ func TestSyncedOptIn(t *testing.T) {
 	if _, ok := f["empty"]; ok {
 		t.Fatal("empty values must be skipped")
 	}
-	if _, ok := f["group"]; ok {
+	if _, ok := f["sync_group"]; ok {
 		t.Fatal("control fields must not become files")
 	}
 	if got[1].Group != "" || got[1].RelPath("password") != "plain/password" {
@@ -60,7 +60,7 @@ func TestSyncedOptIn(t *testing.T) {
 func TestSyncedErrors(t *testing.T) {
 	on := fld{"sync_enabled", "true"}
 	v := &Vault{Items: []Item{
-		item("bad", on, fld{"group", "../x"}),
+		item("bad", on, fld{"sync_group", "../x"}),
 		item("a b", on),
 		item("a_b", on),
 		item("clash", on, fld{"password", "x"}),
@@ -72,7 +72,7 @@ func TestSyncedErrors(t *testing.T) {
 }
 
 func TestSyncedMultipleGroups(t *testing.T) {
-	v := &Vault{Items: []Item{item("pw", fld{"sync_enabled", "true"}, fld{"group", "mariadb, caddy,,mariadb"})}}
+	v := &Vault{Items: []Item{item("pw", fld{"sync_enabled", "true"}, fld{"sync_group", "mariadb, caddy,,mariadb"})}}
 	got, errs := v.Synced()
 	if len(errs) != 0 || len(got) != 2 || got[0].Group != "mariadb" || got[1].Group != "caddy" {
 		t.Fatalf("got %+v, errs %v", got, errs)

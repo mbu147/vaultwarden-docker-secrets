@@ -81,7 +81,7 @@ func read(t *testing.T, p string) string {
 }
 
 func TestSyncCreateAndRotate(t *testing.T) {
-	s, v, c, dir := setup(t, mkItem("root pw", "one", on, fld{"group", "mariadb"}), mkItem("ignored", "x"))
+	s, v, c, dir := setup(t, mkItem("root pw", "one", on, fld{"sync_group", "mariadb"}), mkItem("ignored", "x"))
 	ctx := context.Background()
 	if err := s.SyncOnce(ctx); err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestSyncCreateAndRotate(t *testing.T) {
 		t.Fatal("ready file missing")
 	}
 
-	v.items = []bw.Item{mkItem("root pw", "two", on, fld{"group", "mariadb"})}
+	v.items = []bw.Item{mkItem("root pw", "two", on, fld{"sync_group", "mariadb"})}
 	if err := s.SyncOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -107,10 +107,10 @@ func TestSyncCreateAndRotate(t *testing.T) {
 }
 
 func TestRestartByItemTarget(t *testing.T) {
-	s, v, c, _ := setup(t, mkItem("cache", "a", on, fld{"group", "redis"}))
+	s, v, c, _ := setup(t, mkItem("cache", "a", on, fld{"sync_group", "redis"}))
 	ctx := context.Background()
 	_ = s.SyncOnce(ctx)
-	v.items = []bw.Item{mkItem("cache", "b", on, fld{"group", "redis"})}
+	v.items = []bw.Item{mkItem("cache", "b", on, fld{"sync_group", "redis"})}
 	_ = s.SyncOnce(ctx)
 	if len(c.restarted) != 1 || c.restarted[0] != "other" {
 		t.Fatalf("restarted: %v", c.restarted)
@@ -131,14 +131,14 @@ func TestRotateDisabled(t *testing.T) {
 }
 
 func TestPrune(t *testing.T) {
-	s, v, _, dir := setup(t, mkItem("db", "one", on, fld{"group", "g"}), mkItem("keep", "k", on))
+	s, v, _, dir := setup(t, mkItem("db", "one", on, fld{"sync_group", "g"}), mkItem("keep", "k", on))
 	ctx := context.Background()
 	_ = s.SyncOnce(ctx)
 	foreign := filepath.Join(dir, "foreign")
 	_ = os.WriteFile(foreign, []byte("x"), 0o600)
 
 	// Group change moves the file; sync_enabled removal deletes it.
-	v.items = []bw.Item{mkItem("db", "one", on, fld{"group", "h"}), mkItem("keep", "k")}
+	v.items = []bw.Item{mkItem("db", "one", on, fld{"sync_group", "h"}), mkItem("keep", "k")}
 	if err := s.SyncOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestPruneSkippedOnErrors(t *testing.T) {
 	s, v, _, dir := setup(t, mkItem("db", "one", on))
 	ctx := context.Background()
 	_ = s.SyncOnce(ctx)
-	v.items = []bw.Item{mkItem("bad", "x", on, fld{"group", "../x"})}
+	v.items = []bw.Item{mkItem("bad", "x", on, fld{"sync_group", "../x"})}
 	if err := s.SyncOnce(ctx); err == nil {
 		t.Fatal("expected error")
 	}

@@ -28,7 +28,7 @@ Flow: `cmd/secret-sync/main.go` wires everything → `internal/syncer` runs a lo
 
 ## Behavior that is easy to break
 
-- **Layout**: `<secret_dir>/[<group>/]<sanitized item name>/<file>`; files `password`, `username`, `notes`, `uri` plus one per custom field. `sync_enabled` and `group` are control fields and never written. Empty values are skipped; name collisions are errors and skip the item.
+- **Layout**: `<secret_dir>/[<group>/]<sanitized item name>/<file>`; files `password`, `username`, `notes`, `uri` plus one per custom field. `sync_enabled` and `sync_group` are control fields and never written. Empty values are skipped; name collisions are errors and skip the item.
 - **File backend rewrites in place** (truncate + write, same inode, chmod around it). Compose bind-mounts secret files directly, so rename-based atomic writes would leave containers on the old file. `TestFileWriteKeepsInode` guards this.
 - **Rotation**: a file that does not exist yet is just created and never triggers a restart. With `rotate: false`, an existing file is kept and only a warning is logged.
 - **Restart targets**: containers labeled `secret-sync.restart=<group>|<group>/<item>|<item>[,...]`; a changed file produces the targets `group`, `group/item` (or just `item` without group).

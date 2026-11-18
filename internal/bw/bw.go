@@ -20,7 +20,7 @@ const (
 	// SyncField opts an item in: only items where it is true are synced.
 	SyncField = "sync_enabled"
 	// GroupField optionally places the item below a subdirectory.
-	GroupField = "group"
+	GroupField = "sync_group"
 )
 
 // Item is the subset of a Bitwarden item that secret-sync needs.
