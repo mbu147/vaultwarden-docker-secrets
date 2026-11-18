@@ -170,8 +170,8 @@ func (c *Config) applyDefaults() error {
 	if c.ReadyFile == "" {
 		c.ReadyFile = "/tmp/secret-sync.ready"
 	}
-	if c.Webhook.Listen != "" && c.Webhook.TokenFile == "" {
-		return fmt.Errorf("webhook.token_file is required when webhook.listen is set")
+	if c.Webhook.Listen != "" && c.Webhook.TokenFile == "" && os.Getenv("SECRET_SYNC_WEBHOOK_TOKEN") == "" {
+		return fmt.Errorf("webhook.token_file or SECRET_SYNC_WEBHOOK_TOKEN is required when webhook.listen is set")
 	}
 	if c.EnvFile.Name == "" {
 		c.EnvFile.Name = ".secrets"

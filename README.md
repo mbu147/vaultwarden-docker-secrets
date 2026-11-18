@@ -176,7 +176,7 @@ win over the file.
 | `SECRET_SYNC_DATA_DIR` | `data_dir` | `/data` | bw CLI state: login and vault cache (encrypted by Bitwarden with the master key). If the vault is unreachable, the cache is used. It survives restarts only when a persistent volume is mounted here; otherwise a temp directory is used and the cache is rebuilt from the vault on every start |
 | `SECRET_SYNC_READY_FILE` | `ready_file` | `/tmp/secret-sync.ready` | Written after a fully successful sync |
 | `SECRET_SYNC_WEBHOOK_LISTEN` | `webhook.listen` | off | e.g. `:8080` |
-| `SECRET_SYNC_WEBHOOK_TOKEN_FILE` | `webhook.token_file` | – | Required with the webhook |
+| `SECRET_SYNC_WEBHOOK_TOKEN_FILE` / `SECRET_SYNC_WEBHOOK_TOKEN` | `webhook.token_file` | – | Required with the webhook (file preferred) |
 | `DOCKER_HOST` | `docker.host` | default socket | `tcp://host:port` or `unix:///path` |
 | `SECRET_SYNC_ENV_FILE_DIR` | `env_file.dir` | off | Base directory of the Compose projects; enables the [env file](#env-file-per-compose-project) |
 | `SECRET_SYNC_ENV_FILE_NAME` | `env_file.name` | `.secrets` | File name inside each project directory |

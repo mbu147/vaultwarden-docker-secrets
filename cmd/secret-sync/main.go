@@ -121,7 +121,7 @@ func run(cfgPath string, once, health bool) error {
 		return s.SyncOnce(ctx)
 	}
 	if cfg.Webhook.Listen != "" {
-		token, err := config.ReadCredential(cfg.Webhook.TokenFile, "")
+		token, err := config.ReadCredential(cfg.Webhook.TokenFile, "SECRET_SYNC_WEBHOOK_TOKEN")
 		if err != nil {
 			return fmt.Errorf("webhook token: %w", err)
 		}
