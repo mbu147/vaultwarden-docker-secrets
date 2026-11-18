@@ -127,6 +127,13 @@ func manifestValue(v arcane.Variable) string {
 	return ""
 }
 
+func TestResolveEnvsEmptyList(t *testing.T) {
+	got, err := resolveEnvs([]string{"b", "a"}, nil)
+	if err != nil || strings.Join(got, ",") != "a,b" {
+		t.Fatalf("got=%v err=%v", got, err)
+	}
+}
+
 func TestArcanePrune(t *testing.T) {
 	s, v, _ := setup(t, mkItem("db", "one", on), mkItem("old", "x", on))
 	fv := &fakeVars{vars: []arcane.Variable{{ID: "foreign", Key: "FOREIGN", AllEnvironments: true}}}

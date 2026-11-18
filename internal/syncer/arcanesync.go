@@ -43,6 +43,10 @@ func (s *Syncer) syncArcane(ctx context.Context, items []bw.SyncedItem, prune bo
 				if envs, err = s.Variables.Environments(ctx); err != nil {
 					return append(errs, err)
 				}
+				if len(envs) == 0 {
+					slog.Warn("arcane returned no environments (API key permissions?); sync_arcane_agents values are used as IDs")
+					envs = []arcane.Environment{}
+				}
 			}
 			var err error
 			if agents, err = resolveEnvs(agents, envs); err != nil {
@@ -182,6 +186,11 @@ func (s *Syncer) updateManifest(ctx context.Context, byID map[string]arcane.Vari
 
 // resolveEnvs maps environment IDs or names (case-insensitive) to sorted IDs.
 func resolveEnvs(refs []string, envs []arcane.Environment) ([]string, error) {
+	if len(envs) == 0 {
+		out := append([]string(nil), refs...)
+		sort.Strings(out)
+		return out, nil
+	}
 	var out []string
 	for _, r := range refs {
 		found := ""

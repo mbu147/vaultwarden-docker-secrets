@@ -102,20 +102,40 @@ type Environment struct {
 	Name string `json:"name"`
 }
 
-// Environments lists all environments. Newer Arcane versions serve them under
-// /api/agents, older ones under /api/environments.
+// Environments lists all environments, page by page. Newer Arcane versions
+// serve them under /api/agents, older ones under /api/environments.
 func (c *Client) Environments(ctx context.Context) ([]Environment, error) {
-	var out struct {
-		Data []Environment `json:"data"`
+	const limit = 100
+	base := "/api/agents"
+	var all []Environment
+	seen := map[string]bool{}
+	for start := 0; start < 100*limit; start += limit {
+		var out struct {
+			Data []Environment `json:"data"`
+		}
+		path := fmt.Sprintf("%s?start=%d&limit=%d", base, start, limit)
+		err := c.do(ctx, http.MethodGet, path, nil, &out)
+		if err != nil && start == 0 && base == "/api/agents" && strings.Contains(err.Error(), "status 404") {
+			base = "/api/environments"
+			start -= limit
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		added := 0
+		for _, e := range out.Data {
+			if !seen[e.ID] {
+				seen[e.ID] = true
+				all = append(all, e)
+				added++
+			}
+		}
+		if len(out.Data) < limit || added == 0 {
+			break
+		}
 	}
-	err := c.do(ctx, http.MethodGet, "/api/agents?limit=1000", nil, &out)
-	if err != nil && strings.Contains(err.Error(), "status 404") {
-		err = c.do(ctx, http.MethodGet, "/api/environments?limit=1000", nil, &out)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return out.Data, nil
+	return all, nil
 }
 
 // Create adds a variable.
