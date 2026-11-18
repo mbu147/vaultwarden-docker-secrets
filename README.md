@@ -115,6 +115,12 @@ Enable it by mounting the directory that contains all Compose projects
 - Containers must exist (running or created) for secret-sync to find the
   project. With `required: false` the first `up` creates them without the file,
   secret-sync then writes it, and the next recreate picks it up.
+- **Ownership**: secret-sync runs as UID 1000 and must be allowed to create the
+  file in the project directory. If another user owns the projects (Arcane, for
+  example, uses `65532:65532`), the log shows `permission denied`. Run
+  secret-sync as that user instead: set `user: "65532:65532"` and the same
+  uid/gid on the `/tmp` tmpfs in the Compose file, and make the credential files
+  readable for it (`chown 65532:65532 bootstrap/*`).
 - The file is plaintext on disk and is never deleted automatically. Its
   readers are root (Docker/Compose) and the owner (UID 1000); make sure the
   project directory is not readable by others. Add `.secrets` to `.gitignore`.
@@ -173,7 +179,6 @@ win over the file.
 | `BW_CLIENTSECRET_FILE` / `BW_CLIENTSECRET` | `bitwarden.client_secret_file` | – | API key secret |
 | `BW_PASSWORD_FILE` / `BW_PASSWORD` | `bitwarden.password_file` | – | Master password |
 | `SECRET_SYNC_INTERVAL` | `interval` | `5m` | Polling interval (min `10s`) |
-| `SECRET_SYNC_DATA_DIR` | `data_dir` | `/data` | bw CLI state: login and vault cache (encrypted by Bitwarden with the master key). If the vault is unreachable, the cache is used. It survives restarts only when a persistent volume is mounted here; otherwise a temp directory is used and the cache is rebuilt from the vault on every start |
 | `SECRET_SYNC_READY_FILE` | `ready_file` | `/tmp/secret-sync.ready` | Written after a fully successful sync |
 | `SECRET_SYNC_WEBHOOK_LISTEN` | `webhook.listen` | off | e.g. `:8080` |
 | `SECRET_SYNC_WEBHOOK_TOKEN_FILE` / `SECRET_SYNC_WEBHOOK_TOKEN` | `webhook.token_file` | – | Required with the webhook (file preferred) |

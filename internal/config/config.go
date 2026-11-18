@@ -18,15 +18,11 @@ import (
 type Config struct {
 	Bitwarden Bitwarden     `yaml:"bitwarden"`
 	Interval  time.Duration `yaml:"interval"`
-	// DataDir holds the bw CLI state: login and encrypted vault cache (default
-	// /data). It survives restarts only if it is a mount point; otherwise a temp
-	// directory is used and the cache is rebuilt on every start.
-	DataDir   string  `yaml:"data_dir"`
-	ReadyFile string  `yaml:"ready_file"`
-	Webhook   Webhook `yaml:"webhook"`
-	Docker    Docker  `yaml:"docker"`
-	EnvFile   EnvFile `yaml:"env_file"`
-	Arcane    Arcane  `yaml:"arcane"`
+	ReadyFile string        `yaml:"ready_file"`
+	Webhook   Webhook       `yaml:"webhook"`
+	Docker    Docker        `yaml:"docker"`
+	EnvFile   EnvFile       `yaml:"env_file"`
+	Arcane    Arcane        `yaml:"arcane"`
 }
 
 // Bitwarden holds connection and credential settings. Credentials are read
@@ -133,7 +129,6 @@ func (c *Config) applyEnv(get func(string) string) error {
 	str(&c.Bitwarden.ClientIDFile, "BW_CLIENTID_FILE")
 	str(&c.Bitwarden.ClientSecretFile, "BW_CLIENTSECRET_FILE")
 	str(&c.Bitwarden.PasswordFile, "BW_PASSWORD_FILE")
-	str(&c.DataDir, "SECRET_SYNC_DATA_DIR")
 	str(&c.ReadyFile, "SECRET_SYNC_READY_FILE")
 	str(&c.Webhook.Listen, "SECRET_SYNC_WEBHOOK_LISTEN")
 	str(&c.Webhook.TokenFile, "SECRET_SYNC_WEBHOOK_TOKEN_FILE")
@@ -163,9 +158,6 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.Interval < 10*time.Second {
 		return fmt.Errorf("interval must be at least 10s")
-	}
-	if c.DataDir == "" {
-		c.DataDir = "/data"
 	}
 	if c.ReadyFile == "" {
 		c.ReadyFile = "/tmp/secret-sync.ready"

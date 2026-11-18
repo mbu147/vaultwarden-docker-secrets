@@ -132,15 +132,24 @@ func (s *Syncer) writeEnvFile(dir string, vars envVars) error {
 	}
 	hash := backend.Hash(content)
 	if exists && cur == hash {
-		slog.Debug("env file unchanged", "file", path, "hash", short(hash))
+		slog.Debug("env file unchanged", "file", path, "variables", sortedNames(vars), "hash", short(hash))
 		return nil
 	}
 	if err := f.Write(name, content, s.Cfg.EnvFile.FileMode); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	slog.Info("env file written; recreate the project to apply it", "file", path,
-		"variables", len(vars), "hash", short(hash))
+		"variables", sortedNames(vars), "hash", short(hash))
 	return nil
+}
+
+func sortedNames(vars envVars) []string {
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // renderEnv renders sorted KEY=value lines in Compose dotenv syntax.

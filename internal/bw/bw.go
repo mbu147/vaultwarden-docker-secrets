@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -260,8 +259,7 @@ type Client struct {
 	Binary string
 	Server string
 	Creds  Credentials
-	// DataDir is the CLI app data directory. It holds the login and the
-	// encrypted vault cache, which is served while the server is unreachable.
+	// DataDir is the CLI app data directory (login state); it is temporary.
 	DataDir string
 
 	mu      sync.Mutex
@@ -366,7 +364,7 @@ func (c *Client) Fetch(ctx context.Context) (*Vault, error) {
 func (c *Client) fetch(ctx context.Context) (*Vault, error) {
 	env := []string{"BW_SESSION=" + c.session}
 	if _, err := c.run(ctx, env, "sync"); err != nil {
-		slog.Warn("vault sync failed, using cached vault", "error", err)
+		return nil, err
 	}
 	out, err := c.run(ctx, env, "list", "items")
 	if err != nil {

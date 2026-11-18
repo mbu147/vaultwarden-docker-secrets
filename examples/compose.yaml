@@ -28,13 +28,13 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # Must match the owner of the project directories (see README, "Env file
+    # per Compose project"); the image default is 1000.
+    # user: "65532:65532"
     tmpfs:
-      - /tmp:uid=1000,gid=1000,mode=0700
+      - /tmp:uid=1000,gid=1000,mode=0700   # use the same uid/gid as `user`
     volumes:
       - ./config/config.yaml:/etc/secret-sync/config.yaml:ro   # optional
-      # Keeps the vault cache across restarts; the volume must be writable by
-      # UID 1000 (declare it under volumes: and chown it once).
-      # - sync-data:/data
       # All Compose projects, read-write, at the same path Compose reports as
       # working_dir (see README).
       - /app/data/projects:/app/data/projects

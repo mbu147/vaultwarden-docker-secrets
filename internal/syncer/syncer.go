@@ -95,6 +95,9 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("fetch vault: %w", err)
 	}
 	items, errs := vault.Synced()
+	for _, it := range items {
+		slog.Debug("item selected", "item", it.Dir, "group", it.Group, "values", len(it.Files))
+	}
 
 	errs = append(errs, s.syncEnvFiles(ctx, items)...)
 	errs = append(errs, s.syncArcane(ctx, items)...)
