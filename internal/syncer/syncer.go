@@ -50,6 +50,7 @@ type Syncer struct {
 	trigger   chan struct{}
 	healthy   atomic.Bool
 	runMu     sync.Mutex
+	deleted   int // Arcane variables deleted in the current run
 }
 
 // New creates a Syncer.
@@ -71,17 +72,19 @@ func (s *Syncer) Trigger() {
 
 // Run syncs immediately and then on every interval or trigger until ctx ends.
 func (s *Syncer) Run(ctx context.Context) {
-	ticker := time.NewTicker(s.Cfg.Interval)
-	defer ticker.Stop()
 	for {
 		if err := s.SyncOnce(ctx); err != nil {
 			slog.Error("sync finished with errors", "error", err)
 		}
+		// The interval restarts after every run, so next_sync in the log is exact.
+		timer := time.NewTimer(s.Cfg.Interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		case <-s.trigger:
+			timer.Stop()
 		}
 	}
 }
@@ -90,6 +93,7 @@ func (s *Syncer) Run(ctx context.Context) {
 func (s *Syncer) SyncOnce(ctx context.Context) error {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
+	s.deleted = 0
 
 	vault, err := s.Vault.Fetch(ctx)
 	if err != nil {
@@ -109,7 +113,8 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	s.healthy.Store(len(errs) == 0)
-	slog.Info("sync finished", "items", len(items), "errors", len(errs))
+	slog.Info("sync finished", "items", len(items), "deleted_items", s.deleted, "errors", len(errs),
+		"next_sync", time.Now().Add(s.Cfg.Interval).UTC().Format(time.RFC3339))
 	return errors.Join(errs...)
 }
 

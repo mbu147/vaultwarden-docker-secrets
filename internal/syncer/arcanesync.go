@@ -152,6 +152,7 @@ func (s *Syncer) updateManifest(ctx context.Context, byID map[string]arcane.Vari
 				continue
 			}
 			slog.Info("arcane variable deleted", "key", cur.Key, "agents", agentsLog(cur.EnvironmentIDs))
+			s.deleted++
 			delete(s.varHashes, id)
 		}
 	}

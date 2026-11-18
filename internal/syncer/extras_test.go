@@ -139,7 +139,7 @@ func TestArcanePrune(t *testing.T) {
 	if err := s.SyncOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(fv.deleted) != 1 || fv.deleted[0] != "id-OLD_PASSWORD" {
+	if len(fv.deleted) != 1 || fv.deleted[0] != "id-OLD_PASSWORD" || s.deleted != 1 {
 		t.Fatalf("deleted=%v", fv.deleted)
 	}
 	for _, x := range fv.vars {
