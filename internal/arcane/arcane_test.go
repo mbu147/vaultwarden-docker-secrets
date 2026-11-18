@@ -8,6 +8,23 @@ import (
 	"testing"
 )
 
+func TestEnvironmentsFallback(t *testing.T) {
+	for path, newAPI := range map[string]bool{"/api/agents": true, "/api/environments": false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != path {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[{"id":"7","name":"srv"}]}`))
+		}))
+		envs, err := New(srv.URL, "k").Environments(context.Background())
+		srv.Close()
+		if err != nil || len(envs) != 1 || envs[0].ID != "7" || envs[0].Name != "srv" {
+			t.Fatalf("newAPI=%v envs=%v err=%v", newAPI, envs, err)
+		}
+	}
+}
+
 func TestClient(t *testing.T) {
 	var gotMethod, gotPath, gotKey string
 	var gotBody map[string]any

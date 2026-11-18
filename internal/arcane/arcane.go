@@ -102,12 +102,17 @@ type Environment struct {
 	Name string `json:"name"`
 }
 
-// Environments lists all environments.
+// Environments lists all environments. Newer Arcane versions serve them under
+// /api/agents, older ones under /api/environments.
 func (c *Client) Environments(ctx context.Context) ([]Environment, error) {
 	var out struct {
 		Data []Environment `json:"data"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/environments?limit=1000", nil, &out); err != nil {
+	err := c.do(ctx, http.MethodGet, "/api/agents?limit=1000", nil, &out)
+	if err != nil && strings.Contains(err.Error(), "status 404") {
+		err = c.do(ctx, http.MethodGet, "/api/environments?limit=1000", nil, &out)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return out.Data, nil
