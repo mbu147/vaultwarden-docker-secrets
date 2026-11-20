@@ -160,6 +160,25 @@ secret-sync with `ARCANE_API_KEY_FILE` (preferred) or `ARCANE_API_KEY`.
 - Arcane's API paths (`/api/variables`, header `X-Api-Key`) were taken from its
   source; verify against your Arcane version.
 
+### Arcane API key permissions
+
+Arcane API keys have no scopes of their own; a key acts with the permissions of
+the Arcane user that created it. That user must be allowed to call:
+
+| Call | Purpose |
+| --- | --- |
+| `GET /api/variables` | list existing variables |
+| `POST /api/variables` | create variables (including `SECRET_SYNC_MANAGED`) |
+| `PATCH /api/variables/{id}` | update variables |
+| `DELETE /api/variables/{id}` | delete variables that vanished from the vault |
+| `GET /api/agents` (older versions: `/api/environments`) | resolve `sync_arcane_agents` names; only called if an item sets it |
+
+Use a dedicated Arcane user for secret-sync with the least privileges that
+still allow the calls above (global variables and environment/agent read
+access), not your personal admin account. A key without environment read access
+makes `sync_arcane_agents` values be used as IDs verbatim (a warning is logged).
+A 401/403 in the log means the key or its user lacks one of these permissions.
+
 ## Docker socket access
 
 Only needed to list containers and read their Compose project directory (env
