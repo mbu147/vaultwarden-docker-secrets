@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/secret-sync ./cmd/secret-sync
 
-FROM node:22-alpine
+FROM node:26-alpine
 # The Bitwarden CLI is only distributed via npm (or a glibc binary), so the
 # runtime image is Node based. Renovate/Dependabot can bump this version.
 ARG BW_VERSION=2026.10.1
